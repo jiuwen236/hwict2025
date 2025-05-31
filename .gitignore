@@ -1,4 +1,5 @@
-*.in
 *.log
+*.png
 main
+judge
 __pycache__
