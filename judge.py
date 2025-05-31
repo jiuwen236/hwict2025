@@ -4,15 +4,16 @@ import subprocess
 import glob
 import time
 import math
+import argparse
 
-# output file: score.log
+# command: python judge.py [-cpp cpp_file_path]
+# output file: score.log (in the same directory as the cpp file)
 
-def compile_cpp():
-    cpp_files = ["main.cpp"]
-    cmd = ["g++","-std=c++11"] + cpp_files + ["-o", "main"]
+def compile_cpp(cpp_file, exe_path, log_file):  # 接受cpp文件路径、可执行文件路径和日志文件路径
+    cmd = ["g++", "-O2", cpp_file, "-o", exe_path]  # 使用指定的cpp文件
     res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     if res.returncode != 0:
-        with open("score.log", "w", encoding="utf-8") as f:
+        with open(log_file, "w", encoding="utf-8") as f:  # 使用指定的日志文件路径
             f.write("Compilation Error\n")
             f.write(res.stderr.decode())
         print("Compilation Error")
@@ -229,8 +230,24 @@ def compute_score(in_file, stdout):
 
 
 def main():
-    compile_cpp()
-    in_files = sorted(glob.glob(os.path.join('data', '*.in')))
+    # 解析命令行参数
+    parser = argparse.ArgumentParser()
+    parser.add_argument('-cpp', type=str, default='main.cpp', help='Path to the cpp file')
+    args = parser.parse_args()
+    
+    # 确定基础路径和文件路径
+    cpp_path = args.cpp
+    base_dir = os.path.dirname(cpp_path) if os.path.dirname(cpp_path) else '.'
+    exe_path = os.path.join(base_dir, 'main')
+    log_file = os.path.join(base_dir, 'score.log')  # 日志文件放在cpp所在目录
+
+    # 获取脚本所在目录的绝对路径
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    
+    # 调用编译函数时传递新参数
+    compile_cpp(cpp_path, exe_path, log_file)
+    
+    in_files = sorted(glob.glob(os.path.join(script_dir, 'data', '*.in')))
     num_cases = len(in_files)
     total_score = 0.0
     total_time = 0.0
@@ -240,7 +257,8 @@ def main():
         name = os.path.basename(infile)
         start = time.perf_counter()
         try:
-            res = subprocess.run(["./main"], stdin=open(infile), stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=30)
+            # 使用新的可执行文件路径
+            res = subprocess.run([exe_path], stdin=open(infile), stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=30)
             dur = time.perf_counter() - start
             total_time += dur
             out = res.stdout.decode()
@@ -270,10 +288,12 @@ def main():
     avg_time = total_time / num_cases if num_cases else 0.0
     log_lines.append(f"总分: {total_score:.2f}")
     log_lines.append(f"平均分: {avg_score:.2f}, 平均时间: {avg_time:.2f}s")
-    with open("score.log", "w", encoding="utf-8") as f:
+    
+    # 使用新的日志文件路径
+    with open(log_file, "w", encoding="utf-8") as f:
         f.write("\n".join(log_lines))
     print(f"总分: {total_score:.2f}")
     print(f"平均分: {avg_score:.2f}, 平均时间: {avg_time:.2f}s")
 
 if __name__ == '__main__':
-    main() 
+    main()
