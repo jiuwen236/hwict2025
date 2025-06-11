@@ -34,19 +34,18 @@ int main() {
     }
   }
 
-  int A, B0;
-  cin >> A >> B0;
+  int A, B;
+  cin >> A >> B;
 
   // 预先算出每台服务器的“最大批次”与单次推理耗时
   vector<int> maxBatch(N);
   vector<ll> procTime(N);
   for (int i = 0; i < N; i++) {
-    int B = (memSize[i] - B0) / A;
-    if (B < 1)
-      B = 1;
-    maxBatch[i] = B;
-    double sp = speedCoef[i] * sqrt((double)B);
-    procTime[i] = (ll)ceil(B / sp);
+    int batch_size = (memSize[i] - B) / A;
+    assert(batch_size > 0);
+    maxBatch[i] = batch_size;
+    double sp = speedCoef[i] * sqrt((double)batch_size);
+    procTime[i] = (ll)ceil(batch_size / sp);
   }
 
   // 用户按 weight 排序
