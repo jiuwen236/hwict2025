@@ -34,6 +34,20 @@
 
 namespace fs = std::filesystem;
 
+// 分数详细信息结构体
+struct ScoreDetails {
+    double total_score;
+    int K;                      // 超时用户数量
+    double h_K;                 // h(K)
+    double timeout_percentage;  // 超时用户百分比
+    double avg_h_xi;           // h(xi) 平均值 (局部超时惩罚)
+    double avg_p_mi;           // p(mi) 平均值 (迁移惩罚)
+    std::vector<double> h_xi_values;  // 每个用户的h(xi)
+    std::vector<double> p_mi_values;  // 每个用户的p(mi)
+    std::vector<int> user_end_times;  // 每个用户的结束时间
+    std::vector<int> move_counts;     // 每个用户的迁移次数
+};
+
 // 编译C++文件
 void compile_cpp(const std::string& cpp_file, const std::string& exe_path, const std::string& log_file) {
     std::string cmd = "g++ -O2 -std=c++17 " + cpp_file + " -o " + exe_path;
@@ -167,7 +181,7 @@ std::string run_program(const std::string& exe_path, const std::string& input_fi
 }
 
 // 计算分数
-double compute_score(const std::string& in_file, const std::string& stdout_str) {
+ScoreDetails compute_score(const std::string& in_file, const std::string& stdout_str) {
     std::ifstream fin(in_file);
     if (!fin) {
         throw std::runtime_error("Cannot open input file: " + in_file);
@@ -465,22 +479,44 @@ double compute_score(const std::string& in_file, const std::string& stdout_str) 
     auto h = [](double x) { return std::pow(2.0, -x / 100.0); };
     auto p = [](double x) { return std::pow(2.0, -x / 200.0); };
 
-    int K = 0;
+    ScoreDetails details;
+    details.K = 0;
     for (int i = 0; i < M; i++) {
-        if (user_end[i] > e[i]) K++;
+        if (user_end[i] > e[i]) details.K++;
     }
 
+    details.h_K = h(details.K);
+    details.timeout_percentage = M > 0 ? (static_cast<double>(details.K) / M) * 100.0 : 0.0;
+    details.user_end_times = user_end;
+    details.move_counts.resize(M);
+    details.h_xi_values.resize(M);
+    details.p_mi_values.resize(M);
+
     double total = 0.0;
+    double sum_h_xi = 0.0;
+    double sum_p_mi = 0.0;
+    
     for (int i = 0; i < M; i++) {
         double xi = static_cast<double>(user_end[i] - e[i]) / (e[i] - s[i]);
         int mi = 0;
         for (size_t j = 0; j < V_list[i].size() - 1; j++) {
             if (V_list[i][j] != V_list[i][j + 1]) mi++;
         }
-        total += h(xi) * p(mi);
+        
+        details.move_counts[i] = mi;
+        details.h_xi_values[i] = h(xi);
+        details.p_mi_values[i] = p(mi);
+        
+        sum_h_xi += details.h_xi_values[i];
+        sum_p_mi += details.p_mi_values[i];
+        total += details.h_xi_values[i] * details.p_mi_values[i];
     }
 
-    return h(K) * total * 10000.0;
+    details.avg_h_xi = M > 0 ? sum_h_xi / M : 0.0;
+    details.avg_p_mi = M > 0 ? sum_p_mi / M : 0.0;
+    details.total_score = details.h_K * total * 10000.0;
+
+    return details;
 }
 
 int main(int argc, char* argv[]) {
@@ -519,13 +555,23 @@ int main(int argc, char* argv[]) {
     int num_cases = in_files.size();
     double total_score = 0.0;
     double total_time = 0.0;
+    double total_h_K = 0.0;
+    double total_timeout_percentage = 0.0;
+    double total_avg_h_xi = 0.0;
+    double total_avg_p_mi = 0.0;
+    
     std::vector<std::string> log_lines;
     log_lines.push_back("测试用例数量: " + std::to_string(num_cases));
 
     for (const auto& infile : in_files) {
         std::string name = infile.filename().string();
         double dur = 0.0;
-        double score = 0.0;
+        ScoreDetails details;
+        details.total_score = 0.0;
+        details.h_K = 0.0;
+        details.timeout_percentage = 0.0;
+        details.avg_h_xi = 0.0;
+        details.avg_p_mi = 0.0;
         std::string error_msg;
         
         try {
@@ -535,17 +581,23 @@ int main(int argc, char* argv[]) {
             dur = std::chrono::duration<double>(end - start).count();
             total_time += dur;
             
-            score = compute_score(infile.string(), output);
-            total_score += score;
+            details = compute_score(infile.string(), output);
+            total_score += details.total_score;
+            total_h_K += details.h_K;
+            total_timeout_percentage += details.timeout_percentage;
+            total_avg_h_xi += details.avg_h_xi;
+            total_avg_p_mi += details.avg_p_mi;
         } catch (const std::exception& e) {
             error_msg = e.what();
-            score = 0.0;
             if (error_msg == "Timeout") dur = 30.0;
         }
 
         log_lines.push_back("文件名: " + name);
-        log_lines.push_back("分数: " + std::to_string(score) + ", 时间: " + 
-                           std::to_string(dur) + "s");
+        log_lines.push_back("分数: " + std::to_string(details.total_score) + 
+                           ", 时间: " + std::to_string(dur) + "s" +
+                           ", 全局超时惩罚: " + std::to_string(details.h_K) + "/" + std::to_string(details.timeout_percentage) + "%" +
+                           ", 局部超时惩罚: " + std::to_string(details.avg_h_xi) +
+                           ", 迁移惩罚: " + std::to_string(details.avg_p_mi));
         if (!error_msg.empty()) {
             log_lines.push_back("错误: " + error_msg);
         }
@@ -554,10 +606,17 @@ int main(int argc, char* argv[]) {
 
     double avg_score = num_cases > 0 ? total_score / num_cases : 0.0;
     double avg_time = num_cases > 0 ? total_time / num_cases : 0.0;
+    double avg_h_K = num_cases > 0 ? total_h_K / num_cases : 0.0;
+    double avg_timeout_percentage = num_cases > 0 ? total_timeout_percentage / num_cases : 0.0;
+    double avg_h_xi = num_cases > 0 ? total_avg_h_xi / num_cases : 0.0;
+    double avg_p_mi = num_cases > 0 ? total_avg_p_mi / num_cases : 0.0;
     
     log_lines.push_back("总分: " + std::to_string(total_score));
     log_lines.push_back("平均分: " + std::to_string(avg_score) + 
-                       ", 平均时间: " + std::to_string(avg_time) + "s");
+                       ", 平均时间: " + std::to_string(avg_time) + "s" +
+                       ", 全局超时惩罚: " + std::to_string(avg_h_K) + "/" + std::to_string(avg_timeout_percentage) + "%" +
+                       ", 局部超时惩罚: " + std::to_string(avg_h_xi) +
+                       ", 迁移惩罚: " + std::to_string(avg_p_mi));
 
     // 写入日志文件
     std::ofstream log_out(log_file);
@@ -566,7 +625,10 @@ int main(int argc, char* argv[]) {
     }
     
     std::cout << "总分: " << std::to_string(total_score) << "\n";
-    std::cout << "平均分: " << std::to_string(avg_score) << ", 平均时间: " << std::to_string(avg_time) << "s\n";
+    std::cout << "平均分: " << std::to_string(avg_score) << ", 平均时间: " << std::to_string(avg_time) << "s" 
+              << ", 全局超时惩罚: " << std::to_string(avg_h_K) << "/" << std::to_string(avg_timeout_percentage) << "%" 
+              << ", 局部超时惩罚: " << std::to_string(avg_h_xi) 
+              << ", 迁移惩罚: " << std::to_string(avg_p_mi) << "\n";
     
     return 0;
 }
