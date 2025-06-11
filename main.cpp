@@ -13,7 +13,7 @@ int main() {
 
   int N;
   cin >> N;
-  vector<int> cores(N), speedCoef(N), memSize(N);
+  vector<int> cores(N), speedCoef(N), memSize(N);  // g, k, m
   for (int i = 0; i < N; i++) {
     cin >> cores[i] >> speedCoef[i] >> memSize[i];
   }
@@ -27,8 +27,7 @@ int main() {
     users[i].weight = ll(users[i].e - users[i].s) * users[i].cnt;
   }
 
-  // latency[server][user]
-  vector<vector<int>> latency(N, vector<int>(M));
+  vector<vector<int>> latency(N, vector<int>(M)); // latency[server][user]
   for (int i = 0; i < N; i++) {
     for (int j = 0; j < M; j++) {
       cin >> latency[i][j];
