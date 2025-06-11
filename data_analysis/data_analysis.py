@@ -5,7 +5,9 @@ import pandas as pd
 from collections import defaultdict
 import matplotlib
 
-data_file_path = 'data/a20_b200.in'
+# python data_analysis/data_analysis.py
+
+data_file_path = 'data/n3_g1_k1.2_rate6_a20_b200.in'
 
 # Set matplotlib parameters for better display
 plt.rcParams['figure.figsize'] = (12, 8)
@@ -125,7 +127,7 @@ def analyze_users(users):
     # Create DataFrame
     user_df = pd.DataFrame(users)
     user_df['user_id'] = range(1, len(users) + 1)
-    user_df['duration'] = (user_df['end_time'] - user_df['start_time']).mean()
+    user_df['duration'] = (user_df['end_time'] - user_df['start_time'])
     user_df['samples_per_ms'] = user_df['sample_count'] / user_df['duration']
     
     print(f"Total users: {len(users)}")

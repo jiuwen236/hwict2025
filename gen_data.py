@@ -11,13 +11,13 @@ import time
 from pathlib import Path
 
 # ===================== 可自行修改的参数 =====================
-OUTPUT_PREFIX = "n2_g1_k2_a20_b200"          # 最终会生成 sample.in / sample.json
+OUTPUT_PREFIX = "n5_g1_k1.2_rate10_a20_b200"          # 最终会生成 sample.in / sample.json
 
 RAND_SEED     = int(time.time())  # 随机种子；想复现实验可手动改成固定数
 random.seed(RAND_SEED)
 
 # ---------- 单一数值：直接给定 ----------
-N = 2           # 服务器种类数   (1 ≤ N ≤ 10)
+N = 5           # 服务器种类数   (1 ≤ N ≤ 10)
 M = 500         # 用户数量       (1 ≤ M ≤ 500)
 a = 20          # 显存与 batchsize 的关系 (10 ≤ a ≤ 20)
 b = 200         # 同上 (100 ≤ b ≤ 200)
@@ -31,6 +31,7 @@ MEMP_MIN, MEMP_MAX = 1000, 2000  # m_i   NPU 显存大小 (1000, 2000)
 # 用户请求
 CNT_MIN, CNT_MAX   = 1, 6000     # cnt_i 样本数 （1, 6000）
 TIME_MIN, TIME_MAX = 0, 60000    # s_i / e_i 的整体区间
+CNT_RATE_MIN, CNT_RATE_MAX = 5, 10  # cnt_i 倍率 (5, 60000) 自定义的
 
 # 通信时延
 LAT_MIN, LAT_MAX = 10, 20        # latency_{i,j}
@@ -60,10 +61,14 @@ def gen_users():
         # 2. 不断尝试随机 s_i、e_i 直到满足 5*cnt ≤ e-s
         for _retry in range(MAX_RETRY_PER_USER):
             s = random.randint(TIME_MIN, TIME_MAX - 1)
-            e = random.randint(s + 1, TIME_MAX)
-            if e - s >= 5 * cnt:
-                users.append((s, e, cnt))
-                break
+            if s + 5 * cnt > TIME_MAX:
+                continue
+            dur = int(cnt * random.uniform(CNT_RATE_MIN, CNT_RATE_MAX))
+            e = s + dur
+            if e > TIME_MAX:
+                e = random.randint(s + 5 * cnt, TIME_MAX)
+            users.append((s, e, cnt))
+            break
         else:
             # 理论上很难触发；若触发说明 TIME_MAX 太小或 cnt 过大
             raise RuntimeError(f"无法为 cnt={cnt} 找到合规的 (s,e)")

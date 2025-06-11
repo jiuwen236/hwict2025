@@ -2,6 +2,8 @@
 using namespace std;
 using ll = long long;
 
+// o4mini-3
+
 struct User {
   int id, s, e, cnt;
   ll weight;
