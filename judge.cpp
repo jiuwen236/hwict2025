@@ -25,14 +25,18 @@
 #include <fcntl.h>
 #include <sys/select.h>
 #include <signal.h>
+#include <cassert>
 
 // 使用方法：
 // 1. 编译本文件： g++ -O3 -march=native judge.cpp -o judge
 // 2. command: ./judge [-cpp cpp_file_path]
 // 3. output file: score.log (in the same directory as the cpp file)
-
+// 自己实现的判题器
 
 namespace fs = std::filesystem;
+using pii = std::pair<int, int>;
+
+std::string judge_log;
 
 // 分数详细信息结构体
 struct ScoreDetails {
@@ -234,7 +238,7 @@ ScoreDetails compute_score(const std::string& in_file, const std::string& stdout
     }
 
     if (out_lines.size() != 2 * M) {
-        throw std::runtime_error("Invalid Output");
+        throw std::runtime_error("Invalid Output (输出行数不正确，期望" + std::to_string(2 * M) + "行，实际" + std::to_string(out_lines.size()) + "行)");
     }
 
     struct Request {
@@ -258,7 +262,7 @@ ScoreDetails compute_score(const std::string& in_file, const std::string& stdout
         std::istringstream t_iss(out_lines[2 * u]);
         int T;
         if (!(t_iss >> T) || T < 1 || T > 300) {
-            throw std::runtime_error("Invalid Output");
+            throw std::runtime_error("Invalid Output (用户" + std::to_string(u + 1) + "的T值无效，T=" + std::to_string(T) + "，要求1≤T≤300)");
         }
 
         std::istringstream items_iss(out_lines[2 * u + 1]);
@@ -266,7 +270,7 @@ ScoreDetails compute_score(const std::string& in_file, const std::string& stdout
         int item;
         for (int j = 0; j < 4 * T; j++) {
             if (!(items_iss >> item)) {
-                throw std::runtime_error("Invalid Output");
+                throw std::runtime_error("Invalid Output (用户" + std::to_string(u + 1) + "的参数数量不足，期望" + std::to_string(4 * T) + "个参数)");
             }
             items.push_back(item);
         }
@@ -282,19 +286,19 @@ ScoreDetails compute_score(const std::string& in_file, const std::string& stdout
             int B_j = items[4 * j + 3];
 
             if (time_j <= prev_time || time_j < 0 || time_j > 1000000) {
-                throw std::runtime_error("Invalid Output");
+                throw std::runtime_error("Invalid Output (用户" + std::to_string(u + 1) + "的第" + std::to_string(j + 1) + "个时间无效，time=" + std::to_string(time_j) + "，要求时间递增且0≤time≤1000000)");
             }
             if (server_j < 1 || server_j > N) {
-                throw std::runtime_error("Invalid Output");
+                throw std::runtime_error("Invalid Output (用户" + std::to_string(u + 1) + "的第" + std::to_string(j + 1) + "个服务器编号无效，server=" + std::to_string(server_j) + "，要求1≤server≤" + std::to_string(N) + ")");
             }
             if (npu_j < 1 || npu_j > g[server_j - 1]) {
-                throw std::runtime_error("Invalid Output");
+                throw std::runtime_error("Invalid Output (用户" + std::to_string(u + 1) + "的第" + std::to_string(j + 1) + "个NPU编号无效，NPU=" + std::to_string(npu_j) + "，要求1≤NPU≤" + std::to_string(g[server_j - 1]) + ")");
             }
             if (B_j < 1 || B_j > 1000 || a * B_j + b > m[server_j - 1]) {
-                throw std::runtime_error("Invalid Output");
+                throw std::runtime_error("Invalid Output (用户" + std::to_string(u + 1) + "的第" + std::to_string(j + 1) + "个批次大小无效，B=" + std::to_string(B_j) + "，要求1≤B≤1000且" + std::to_string(a) + "*B+" + std::to_string(b) + "≤" + std::to_string(m[server_j - 1]) + ")");
             }
             if (time_j < s[u]) {
-                throw std::runtime_error("Invalid Output");
+                throw std::runtime_error("Invalid Output (用户" + std::to_string(u + 1) + "的第" + std::to_string(j + 1) + "个发送时间过早，time=" + std::to_string(time_j) + "，要求time≥" + std::to_string(s[u]) + ")");
             }
 
             prev_time = time_j;
@@ -316,7 +320,7 @@ ScoreDetails compute_score(const std::string& in_file, const std::string& stdout
         }
 
         if (sumB != cnt[u]) {
-            throw std::runtime_error("Invalid Output");
+            throw std::runtime_error("Invalid Output (用户" + std::to_string(u + 1) + "的总批次大小不匹配，sumB=" + std::to_string(sumB) + "，要求sumB=" + std::to_string(cnt[u]) + ")");
         }
         V_list[u] = V;
     }
@@ -336,10 +340,10 @@ ScoreDetails compute_score(const std::string& in_file, const std::string& stdout
             Request* nxt = user_reqs[u][i + 1];
             int delay = latency[cur->server][u];
             if (nxt->time == cur->time) {
-                throw std::runtime_error("Invalid Output");
+                throw std::runtime_error("Invalid Output (用户" + std::to_string(u + 1) + "在同一时刻" + std::to_string(cur->time) + "发送了多个请求)");
             }
             if (nxt->time < cur->time + delay + 1) {
-                throw std::runtime_error("Invalid Output");
+                throw std::runtime_error("Invalid Output (用户" + std::to_string(u + 1) + "的通信间隔不足，在时刻" + std::to_string(cur->time) + "到" + std::to_string(nxt->time) + "之间，要求间隔≥" + std::to_string(delay + 1) + ")");
             }
         }
     }
@@ -358,7 +362,7 @@ ScoreDetails compute_score(const std::string& in_file, const std::string& stdout
         int mem_cap;
         std::vector<int> mem_used; // per-NPU memory usage
         std::vector<std::pair<int, Request*>> active; // (completion_time, request)
-        std::vector<std::vector<Request*>> queues;    // per NPU queues
+        std::vector<std::deque<Request*>> queues;    // per NPU queues
     };
 
     std::vector<Server> servers;
@@ -367,13 +371,13 @@ ScoreDetails compute_score(const std::string& in_file, const std::string& stdout
             m[i],
             std::vector<int>(g[i]),
             {},
-            std::vector<std::vector<Request*>>(g[i])
+            std::vector<std::deque<Request*>>(g[i])
         });
     }
 
     int total_reqs = requests.size();
     if (total_reqs == 0) {
-        throw std::runtime_error("Invalid Output");
+        throw std::runtime_error("Invalid Output (没有任何请求)");
     }
 
     int done = 0;
@@ -405,33 +409,39 @@ ScoreDetails compute_score(const std::string& in_file, const std::string& stdout
         // 2) 新到达
         auto arr_it = arrival_dict.find(t);
         if (arr_it != arrival_dict.end()) {
-            for (auto rq : arr_it->second) {
+            auto reqs = arr_it->second;
+            // 按用户排序
+            std::sort(reqs.begin(), reqs.end(), [](Request* a, Request* b) {
+                return a->user < b->user;
+            });
+            for (auto rq : reqs) {
                 servers[rq->server].queues[rq->npu].push_back(rq);
             }
         }
 
         // 3) 对刚到达的队列做排序
-        if (arr_it != arrival_dict.end()) {
-            for (auto& srv : servers) {
-                for (auto& q : srv.queues) {
-                    if (!q.empty()) {
-                        std::sort(q.begin(), q.end(), [](Request* a, Request* b) {
-                            if (a->arrival != b->arrival) 
-                                return a->arrival < b->arrival;
-                            return a->user < b->user;
-                        });
-                    }
-                }
-            }
-        }
+        // if (arr_it != arrival_dict.end()) {
+        //     for (auto& srv : servers) {
+        //         for (auto& q : srv.queues) {
+        //             if (!q.empty()) {
+        //                 std::sort(q.begin(), q.end(), [](Request* a, Request* b) {
+        //                     if (a->arrival != b->arrival) 
+        //                         return a->arrival < b->arrival;
+        //                     return a->user < b->user;
+        //                 });
+        //             }
+        //         }
+        //     }
+        // }
 
         // 4) 调度
         bool scheduled = false;
         for (auto& srv : servers) {
             for (auto& q : srv.queues) {
-                std::vector<Request*> new_q;
-                for (auto rq : q) {
-                    if (rq->started) continue;
+                std::deque<Request*> new_q;
+                for (int i = 0; i < q.size(); i++) {
+                    auto rq = q[i];
+                    // assert(!rq->started);
                     if (srv.mem_used[rq->npu] + rq->mem <= srv.mem_cap) {
                         rq->started = true;
                         int comp = t + rq->proc_time;
@@ -439,10 +449,17 @@ ScoreDetails compute_score(const std::string& in_file, const std::string& stdout
                         srv.mem_used[rq->npu] += rq->mem;
                         scheduled = true;
                     } else {
+                        // 显存塞不进了
+                        if (srv.mem_used[rq->npu] + a + b > srv.mem_cap) {
+                            for (int j = i; j < q.size(); j++) {
+                                new_q.push_back(q[j]);
+                            }
+                            break;
+                        }
                         new_q.push_back(rq);
                     }
                 }
-                q = new_q;
+                q = std::move(new_q);
             }
         }
 
@@ -472,7 +489,7 @@ ScoreDetails compute_score(const std::string& in_file, const std::string& stdout
     }
 
     if (done < total_reqs) {
-        throw std::runtime_error("Invalid Output");
+        throw std::runtime_error("Invalid Output (部分请求未能完成处理)");
     }
 
     // 计算分数
@@ -483,6 +500,7 @@ ScoreDetails compute_score(const std::string& in_file, const std::string& stdout
     details.K = 0;
     for (int i = 0; i < M; i++) {
         if (user_end[i] > e[i]) details.K++;
+        // if (user_end[i] > e[i] && i < 10) judge_log += "user " + std::to_string(i) + " end time: " + std::to_string(user_end[i]) + " " + std::to_string(e[i]) + "\n";
     }
 
     details.h_K = h(details.K);
@@ -564,6 +582,7 @@ int main(int argc, char* argv[]) {
     log_lines.push_back("测试用例数量: " + std::to_string(num_cases));
 
     for (const auto& infile : in_files) {
+        judge_log = "";
         std::string name = infile.filename().string();
         double dur = 0.0;
         ScoreDetails details;
@@ -600,6 +619,9 @@ int main(int argc, char* argv[]) {
                            ", 迁移惩罚: " + std::to_string(details.avg_p_mi));
         if (!error_msg.empty()) {
             log_lines.push_back("错误: " + error_msg);
+        }
+        if (!judge_log.empty()) {
+            log_lines.push_back("judge_log: \n" + judge_log);
         }
         log_lines.push_back("");
     }
