@@ -2,9 +2,10 @@
 using namespace std;
 using ll = long long;
 
-// 线下：28424445  线上：71882856
-// 改自 o4mini-3
-// 改为按时间排序
+// 线下：2674037  线上：74688372
+// 禁用迁移；每次请求的大小尽量装满NPU显存
+// 用户按(e_i-s_i)*cnt_i排序，最小的优先；在有更高优先级用户使用NPU时，低优先级的用户不能抢占
+// 最优选择：用户发送请求时会计算对每个NPU的实际推理结束时间，选择最早结束的。
 
 struct User {
   int id, s, e, cnt;
@@ -28,7 +29,7 @@ int main() {
   for (int i = 0; i < M; i++) {
     users[i].id = i;
     cin >> users[i].s >> users[i].e >> users[i].cnt;
-    users[i].weight = users[i].s;
+    users[i].weight = ll(users[i].e - users[i].s) * users[i].cnt;
   }
 
   vector<vector<int>> latency(N, vector<int>(M)); // latency[server][user]
