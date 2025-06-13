@@ -11,7 +11,7 @@ import time
 from pathlib import Path
 
 # ===================== 可自行修改的参数 =====================
-OUTPUT_PREFIX = "n2_g1_k1.2_a10_b100_m1000"          # 最终会生成 sample.in / sample.json
+OUTPUT_PREFIX = "n2_g1_k1_a20_b200_s0_rate7"          # 最终会生成 sample.in / sample.json
 
 RAND_SEED     = int(time.time())  # 随机种子；想复现实验可手动改成固定数
 random.seed(RAND_SEED)
@@ -25,13 +25,14 @@ b = 200         # 同上 (100 ≤ b ≤ 200)
 # ---------- 多个数值：给定范围，均匀随机 ----------
 # 服务器参数
 G_MIN, G_MAX = 1, 1              # g_i   NPU 个数 (1, 10)
-K_MIN, K_MAX = 1, 2              # k_i   推理速度参数 (1, 5)
-MEMP_MIN, MEMP_MAX = 1000, 1000  # m_i   NPU 显存大小 (1000, 2000)
+K_MIN, K_MAX = 1, 1              # k_i   推理速度参数 (1, 5)
+MEMP_MIN, MEMP_MAX = 1000, 2000  # m_i   NPU 显存大小 (1000, 2000)
 
 # 用户请求
 CNT_MIN, CNT_MAX   = 1, 6000     # cnt_i 样本数 （1, 6000）
 TIME_MIN, TIME_MAX = 0, 60000    # s_i / e_i 的整体区间
-CNT_RATE_MIN, CNT_RATE_MAX = 5, 60000  # cnt_i 倍率 (5, 60000) 自定义的
+START_TIME_MIN, START_TIME_MAX = 0, 0 # 请求开始时间 s_i (0， 60000)
+CNT_RATE_MIN, CNT_RATE_MAX = 5, 7  # cnt_i 倍率 (5, 60000) 自定义的
 
 # 通信时延
 LAT_MIN, LAT_MAX = 10, 20        # latency_{i,j}
@@ -60,7 +61,7 @@ def gen_users():
 
         # 2. 不断尝试随机 s_i、e_i 直到满足 5*cnt ≤ e-s
         for _retry in range(MAX_RETRY_PER_USER):
-            s = random.randint(TIME_MIN, TIME_MAX - 1)
+            s = random.randint(START_TIME_MIN, START_TIME_MAX)
             if s + 5 * cnt > TIME_MAX:
                 continue
             dur = int(cnt * random.uniform(CNT_RATE_MIN, CNT_RATE_MAX))
@@ -124,6 +125,7 @@ def write_json_file(path: Path, servers, users, latency):
             "m": [MEMP_MIN, MEMP_MAX],
             "cnt": [CNT_MIN, CNT_MAX],
             "time": [TIME_MIN, TIME_MAX],
+            "start_time": [START_TIME_MIN, START_TIME_MAX],
             "latency": [LAT_MIN, LAT_MAX]
         },
         # 也可以直接把生成结果写进去，便于调试或评测

@@ -4,10 +4,13 @@ using namespace std;
 // 线下: 3984132  线上: 79583261
 
 const bool POSTPONE = 1;  // 延迟超时请求
-const bool IMMEDIATE = 0; // 无视npu占用，立即发送请求
+const bool IMMEDIATE = 0; // 无视一切，立即发送请求
 
 using ll = long long;
 using vi = vector<int>;
+
+// debug
+int computing_power, cnt_sum, start_sum;
 
 struct User {
   int id, s, e, cnt;
@@ -31,6 +34,8 @@ int main() {
   for (int i = 0; i < M; i++) {
     users[i].id = i;
     cin >> users[i].s >> users[i].e >> users[i].cnt;
+    start_sum += users[i].s;
+    cnt_sum += users[i].cnt;
     // users[i].weight = ll(users[i].e - users[i].s) * users[i].cnt;
     // users[i].weight = users[i].s;
     users[i].weight = users[i].cnt;
@@ -73,6 +78,7 @@ int main() {
   int npu_num = 0;
   for (int i = 0; i < N; i++) {
     npu_num += cores[i];
+    computing_power += cores[i] * speedCoef[i];
   }
   for (int i = 0; i < N; i++) {
     freeAt[i].resize(cores[i]);
@@ -80,6 +86,19 @@ int main() {
       freeAt[i][j].resize(1000 * 1000 * 9 / npu_num, true);
     }
   }
+
+  // 观测线上数据
+  // assert(npu_num > 1);  // 初赛线上有 npu_num = 1 的情况, 没有 npu_num = 1 and speedCoef[0] = 1 的情况
+  // assert(computing_power > 2);  // 初赛线上有 computing_power = 2 的情况
+  double avg_cnt = (double)cnt_sum / M;
+  // assert(avg_cnt <= 5998); // 初赛线上存在 avg_cnt < 1500 和 avg_cnt > 5998 (computing_power > 3) 的情况
+  double avg_start = (double)start_sum / M;
+  double variance = 0; // 平均L1距离
+  for (int i = 0; i < M; i++)
+    variance += abs(users[i].s - avg_start);
+  variance /= M;
+  // cerr << "variance: " << variance << endl;
+  // assert(variance >= 1 || M < 100);  // 初赛线上存在 variance < 1 的情况
 
   // 最终输出结构
   vector<vector<array<int, 4>>> schedule(M);
