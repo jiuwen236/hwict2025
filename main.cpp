@@ -1,85 +1,81 @@
 #include <bits/stdc++.h>
 using namespace std;
 
-// 线下: 3984132  线上: 79583261
+// 方法1  
+// 最优batch_size / cnt排序 / 初始版本
+// 线上: 82928031 / 79583261 / 74742303  线下: 22481058 / 21481910 / 11103833
 
+const int METHOD = 1;
+
+// 方法1
 const bool POSTPONE = 1;  // 延迟超时请求
 const bool IMMEDIATE = 0; // 无视一切，立即发送请求
+const bool BEST_BS = 1; // 是否使用更优 batch size
 
 using ll = long long;
 using vi = vector<int>;
 
 // debug
-int computing_power, cnt_sum, start_sum;
+int computing_power, cnt_sum, start_sum, timeout_cnt;
+
+// 题目常数
+const int MAX_M = 500;
+
+// 最终输出结构
+vector<vector<array<int, 4>>> schedule;
+vector<int> T_out;
 
 struct User {
-  int id, s, e, cnt;
+  int id, s, e, cnt, duration;
   ll weight;
 };
 
-int main() {
-  ios::sync_with_stdio(false);
-  cin.tie(nullptr);
+// 输入
+int N, M, A, B;
+vector<int> cores, speedCoef, memSize;
+vector<User> users;
+deque<int> q_user;
+vector<vector<int>> latency;
 
-  int N;
-  cin >> N;
-  vector<int> cores(N), speedCoef(N), memSize(N);  // g, k, m
-  for (int i = 0; i < N; i++) {
-    cin >> cores[i] >> speedCoef[i] >> memSize[i];
-  }
+// 方法1变量
+int npu_num;
 
-  int M;
-  cin >> M;
-  vector<User> users(M);
-  for (int i = 0; i < M; i++) {
-    users[i].id = i;
-    cin >> users[i].s >> users[i].e >> users[i].cnt;
-    start_sum += users[i].s;
-    cnt_sum += users[i].cnt;
-    // users[i].weight = ll(users[i].e - users[i].s) * users[i].cnt;
-    // users[i].weight = users[i].s;
-    users[i].weight = users[i].cnt;
-  }
+// 方法2变量
 
-  vector<vector<int>> latency(N, vector<int>(M)); // latency[server][user]
-  for (int i = 0; i < N; i++) {
-    for (int j = 0; j < M; j++) {
-      cin >> latency[i][j];
-    }
-  }
-
-  int A, B;
-  cin >> A >> B;
-
-  // 预先算出每台服务器的“最大批次”与单次推理耗时
-  vector<int> maxBatch(N);
-  vector<int> procTime(N);
+// 方法1，非并行
+void solve1() {
+  // 预处理NPU的batch size和时间
+  vector<int> maxBatch, procTime;
+  maxBatch.resize(N);
+  procTime.resize(N);
   for (int i = 0; i < N; i++) {
     int batch_size = (memSize[i] - B) / A;
     assert(batch_size > 0);
     maxBatch[i] = batch_size;
-    double sp = speedCoef[i] * sqrt((double)batch_size);
-    procTime[i] = (int)ceil(batch_size / sp);
-    // procTime[i] = 1;
+    int sp = speedCoef[i];
+    procTime[i] = (int)ceil(sqrt((double)batch_size) / sp);
+    // 非并行的最优 batch size
+    double throughput1 = (double)maxBatch[i] / procTime[i];
+    int t = 1;
+    while(!(t * t * sp * sp <= batch_size && (t + 1) * (t + 1) * sp * sp > batch_size)) {
+      t++;
+      if (t > 100) {
+        t = 1;
+        break;
+      }
+    }
+    batch_size = min(batch_size, t * t * sp * sp);
+    double proc_time = (int)ceil(sqrt((double)batch_size) / sp);
+    double throughput2 = (double)batch_size / proc_time;
+    if(BEST_BS && throughput1 < throughput2) {
+      maxBatch[i] = batch_size;
+      procTime[i] = proc_time;
+    }
   }
 
-  // 用户按 weight 排序
-  deque<int> q_user(M);
-  deque<int> postponed;
-  iota(q_user.begin(), q_user.end(), 0);
-  sort(q_user.begin(), q_user.end(), [&](int x, int y) {
-    if (users[x].weight != users[y].weight)
-      return users[x].weight < users[y].weight;
-    return x < y;
-  });
-
-  // 每台服务器每个 NPU 的下次可用时间
-  vector<vector<vector<bool>>> freeAt(N);
-  int npu_num = 0;
-  for (int i = 0; i < N; i++) {
-    npu_num += cores[i];
-    computing_power += cores[i] * speedCoef[i];
-  }
+  // resize
+  vector<vector<vector<bool>>> freeAt;
+  freeAt.resize(N);
   for (int i = 0; i < N; i++) {
     freeAt[i].resize(cores[i]);
     for (int j = 0; j < cores[i]; j++) {
@@ -87,26 +83,8 @@ int main() {
     }
   }
 
-  // 观测线上数据
-  // assert(npu_num > 1);  // 初赛线上有 npu_num = 1 的情况, 没有 npu_num = 1 and speedCoef[0] = 1 的情况
-  // assert(computing_power > 2);  // 初赛线上有 computing_power = 2 的情况
-  double avg_cnt = (double)cnt_sum / M;
-  // assert(avg_cnt <= 5998); // 初赛线上存在 avg_cnt < 1500 和 avg_cnt > 5998 (computing_power > 3) 的情况
-  double avg_start = (double)start_sum / M;
-  double variance = 0; // 平均L1距离
-  for (int i = 0; i < M; i++)
-    variance += abs(users[i].s - avg_start);
-  variance /= M;
-  // cerr << "variance: " << variance << endl;
-  // assert(variance >= 1 || M < 100);  // 初赛线上存在 variance < 1 的情况
-
-  // 最终输出结构
-  vector<vector<array<int, 4>>> schedule(M);
-  vector<int> T_out(M);
-
+  deque<int> postponed;
   // 按优先级调度
-  int timeout_cnt = 0;
-
   while (!q_user.empty() || !postponed.empty()) {
     // 选择普通用户或延迟用户
     int idx = -1;
@@ -209,6 +187,92 @@ int main() {
       freeAt[bestSrv][bestNpu][t] = false;
     }
   }
+}
+
+// bool is_exceed_time(int user_id) {
+// }
+
+// 方法2，允许 npu 并行处理多个用户请求
+void solve2() {
+  // 必然超时的用户
+
+
+  // 逐个添加用户，使用最大吞吐量方案
+  for(int user_id : q_user) {
+    
+  }
+
+  // 处理超时用户
+  
+}
+
+
+int main() {
+  ios::sync_with_stdio(false);
+  cin.tie(nullptr);
+
+  cin >> N;
+  cores.resize(N);
+  speedCoef.resize(N);
+  memSize.resize(N);
+  for (int i = 0; i < N; i++) {
+    cin >> cores[i] >> speedCoef[i] >> memSize[i];
+  }
+
+  cin >> M;
+  users.resize(M);
+  for (int i = 0; i < M; i++) {
+    users[i].id = i;
+    cin >> users[i].s >> users[i].e >> users[i].cnt;
+    users[i].duration = users[i].e - users[i].s;
+    start_sum += users[i].s;
+    cnt_sum += users[i].cnt;
+    // users[i].weight = ll(users[i].e - users[i].s) * users[i].cnt;
+    // users[i].weight = users[i].s;
+    users[i].weight = users[i].cnt;
+  }
+
+  latency.assign(N, vector<int>(M)); // latency[server][user]
+  for (int i = 0; i < N; i++) {
+    for (int j = 0; j < M; j++) {
+      cin >> latency[i][j];
+    }
+  }
+
+  cin >> A >> B;
+
+  for (int i = 0; i < M; ++i) q_user.push_back(i);
+  // Sort user queue by weight
+  sort(q_user.begin(), q_user.end(), [&](int x, int y) {
+    if (users[x].weight != users[y].weight)
+      return users[x].weight < users[y].weight;
+    return x < y;
+  });
+  
+  for (int i = 0; i < N; i++) {
+    npu_num += cores[i];
+    computing_power += cores[i] * speedCoef[i];
+  }
+
+  // 观测线上数据
+  // assert(npu_num > 1);  // 初赛线上有 npu_num = 1 的情况, 没有 npu_num = 1 and speedCoef[0] = 1 的情况
+  // assert(computing_power > 2);  // 初赛线上有 computing_power = 2 的情况
+  double avg_cnt = (double)cnt_sum / M;
+  // assert(avg_cnt <= 5998); // 初赛线上存在 avg_cnt < 1500 和 avg_cnt > 5998 (computing_power > 3) 的情况
+  double avg_start = (double)start_sum / M;
+  double variance = 0; // 平均L1距离
+  for (int i = 0; i < M; i++)
+    variance += abs(users[i].s - avg_start);
+  variance /= M;
+  // cerr << "variance: " << variance << endl;
+  // assert(variance >= 1 || M < 100);  // 初赛线上存在 variance < 1 的情况
+
+  // 最终输出结构
+  schedule.resize(M);
+  T_out.resize(M);
+
+  if (METHOD == 1) solve1();
+  else solve2();
 
   // 输出
   for (int i = 0; i < M; i++) {
