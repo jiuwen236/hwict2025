@@ -31,6 +31,7 @@
 // 1. 编译本文件： g++ -O3 -march=native judge.cpp -o judge
 // 2. command: ./judge [-cpp cpp_file_path]
 // 3. output file: score.log (in the same directory as the cpp file)
+// 数据必须在data文件夹下
 // 自己实现的判题器
 
 namespace fs = std::filesystem;

@@ -5,26 +5,60 @@ using namespace std;
 // 最优batch_size / cnt排序 / 初始版本
 // 线上: 82928031 / 79583261 / 74742303  线下: 22481058 / 21481910 / 11103833
 
-// 自动选择更高分方法
-// 线上: 83653628    线下: 26531703
+// 自动选择更高分方法 + 削峰
+// 线上: 83653628 / 83707134    线下: 26531703 / 28506170
 
-const int METHOD = 0; // 0: 选择最佳方法
+// 方法封装
+struct Method {
+  int METHOD;
+  // 方法1
+  bool POSTPONE;  // 延迟超时请求
+  bool IMMEDIATE; // 无视一切，立即发送请求
+  bool BEST_BS; // 是否使用更优 batch size
+  // 方法2
+  int max_parallel;
+  int min_bs;
+  bool allow_reverse; // 进行削峰
 
-// 方法1
-const bool POSTPONE = 1;  // 延迟超时请求
-const bool IMMEDIATE = 0; // 无视一切，立即发送请求
-const bool BEST_BS = 1; // 是否使用更优 batch size
+  // 方法1
+  static Method method1(bool postpone = 1, bool immediate = 0, bool best_bs = 1) {
+    Method m;
+    m.METHOD = 1;
+    m.POSTPONE = postpone;
+    m.IMMEDIATE = immediate;
+    m.BEST_BS = best_bs;
+    return m;
+  }
+
+  // 方法2
+  static Method method2(int max_parallel = 2, int min_bs = 5, bool allow_reverse = 1) {
+    Method m;
+    m.METHOD = 2;
+    m.max_parallel = max_parallel;
+    m.min_bs = min_bs;
+    m.allow_reverse = allow_reverse;
+    return m;
+  }
+};
+
+// 自动选择最高分方法
+vector<Method> methods = {
+  Method::method1(),
+  Method::method2(),
+  Method::method2(1, 5, 1),
+};
 
 using ll = long long;
 using vi = vector<int>;
 
 // debug
-int computing_power, cnt_sum, start_sum;
+int computing_power, cnt_sum, start_sum, reverse_cnt;
 
 // 题目常数
 const int MAX_N = 10;
 const int MAX_M = 500;
 const int MAX_T_NUM = 300;
+const int MAX_END_TIME = 60000;
 
 // 最终输出结构
 struct Schedule {
@@ -55,6 +89,7 @@ int npu_num;
 
 // 方法2变量
 int max_mem_size;
+vector<double> avg_cnt(MAX_END_TIME + 1);
 
 // 分数计算函数
 double h_func(double x) {
@@ -65,7 +100,7 @@ double p_func(double x) {
 }
 
 // 方法1，非并行
-Schedule solve1() {
+Schedule solve1(bool POSTPONE, bool IMMEDIATE, bool BEST_BS) {
   Schedule res(M);
   deque<int> q_user = q_user_ori;
   int timeout_cnt = 0;
@@ -218,6 +253,22 @@ Schedule solve1() {
 // bool is_exceed_time(int user_id) {
 // }
 
+void get_avg_cnt() {
+  for(auto &u : users) {
+    double avg = (double)u.cnt / u.duration;
+    for(int i = u.s; i <= u.e; ++i) {
+      avg_cnt[i] += avg;
+    }
+  }
+  int dur = 16;
+  for(int i = MAX_END_TIME; i >= dur - 1; --i) {
+    for(int j = i - dur + 1; j < i; ++j) {
+      avg_cnt[i] += avg_cnt[j];
+    }
+    avg_cnt[i] /= dur;
+  }
+}
+
 struct BS_Plan {
   vi batch_size;  // 有序
   vi time;        // batch_size对应消耗的时间
@@ -320,7 +371,7 @@ vector<BS_Plan> get_bs_plan_dfs(int k, int m, int a, int b, vector<double> &bs_r
 }
 
 // 方法2，允许 npu 并行处理多个用户请求
-Schedule solve2() {
+Schedule solve2(int max_parallel, int min_bs_dfs, bool allow_reverse) {
   deque<int> q_user = q_user_ori;
   Schedule res(M);
   int timeout_cnt = 0;
@@ -349,7 +400,7 @@ Schedule solve2() {
     }
     bs_ratio.resize(max_nz_idx + 1);
     // 调用函数获取最优bs方案
-    bs_plans.emplace_back(get_bs_plan_dfs(speedCoef[i], memSize[i], A, B, bs_ratio)[0]);
+    bs_plans.emplace_back(get_bs_plan_dfs(speedCoef[i], memSize[i], A, B, bs_ratio, max_parallel, min_bs_dfs)[0]);
     if(log_bs_plan) {
       cerr << "bs_plans[" << i << "].throughput: " << bs_plans[i].throughput << " loop_time: " << bs_plans[i].loop_time << " left_mem: " << bs_plans[i].left_mem << endl;
       cerr << "bs_plans[" << i << "].batch_size: ";
@@ -390,9 +441,14 @@ Schedule solve2() {
       postponed.pop_front();
     }
     auto &u = users[idx];
-    int bestFinish = INT_MAX;
-    int bestSrv = -1, bestNpu = -1, bestLat = 0;
-    vector<pair<int, int>> best_bs_plan;
+    bool is_reverse = false;
+    if(allow_reverse && !is_late_user && avg_cnt[u.s] > avg_cnt[u.e]) {
+      is_reverse = true;
+      reverse_cnt++;
+    }
+    int bestFinish = is_reverse ? -1 : INT_MAX;
+    int bestSrv = -1, bestNpu = -1, bestLat = 0, bestActualFinish;
+    deque<pair<int, int>> best_bs_plan;
     vector<pair<size_t, size_t>> bestUseTime;
 
     for(size_t i = 0; i < N; ++i) {
@@ -400,42 +456,50 @@ Schedule solve2() {
       int lat = latency[i][u.id];
       int current_cnt = u.cnt;
       for(size_t j = 0; j < cores[i]; ++j) {
-        int start = u.s + lat;
         current_cnt = u.cnt;
-        int finish = INT_MAX;
-        vector<pair<int, int>> bs_plan;
+        deque<pair<int, int>> bs_plan;
         vector<pair<size_t, size_t>> use_time;  // freeAt的最后两个维度
         size_t min_bs_idx = lower_bound(bs_plans[i].batch_size.begin(), bs_plans[i].batch_size.end(), min_bs[u.id]) - bs_plans[i].batch_size.begin();
         if(min_bs_idx == bs_plans[i].batch_size.size()) continue;
         int min_bs_time = bs_plans[i].time[min_bs_idx];
+        int start = u.s + lat;
+        int finish = is_reverse ? -1 : INT_MAX;
+        int actual_finish = -1;
         int end_time = is_late_user ? INT_MAX : u.e;
         // 逐毫秒检查是否可以发送请求
-        for(int t = start; t <= end_time; ++t) {
+        for(int t = is_reverse ? u.e : start; is_reverse ? t >= start : t <= end_time; is_reverse ? --t : ++t) {
           if(current_cnt <= 0) break;
           if(current_cnt < bs_plans[i].batch_size[min_bs_idx]) {
             min_bs_idx = lower_bound(bs_plans[i].batch_size.begin(), bs_plans[i].batch_size.end(), current_cnt) - bs_plans[i].batch_size.begin();
           }
           for(size_t k = min_bs_idx; k < bs_plans[i].batch_size.size(); ++k) {
             if(t % bs_plans[i].time[k] == 0) {
+              if(is_reverse && t + bs_plans[i].time[k] > u.e) break;
               size_t time_idx = t / bs_plans[i].time[k];
               if(freeAt[i][j][k][time_idx]) {
-                bs_plan.push_back({t, min(bs_plans[i].batch_size[k], current_cnt)});
+                if(is_reverse)
+                  bs_plan.push_front({t, min(bs_plans[i].batch_size[k], current_cnt)});
+                else 
+                  bs_plan.push_back({t, min(bs_plans[i].batch_size[k], current_cnt)});
                 use_time.push_back({k, time_idx});
+                if(is_reverse && bs_plan.size() == 1)
+                  actual_finish = t + bs_plans[i].time[k];
                 current_cnt -= bs_plans[i].batch_size[k];
-                finish = t + bs_plans[i].time[k];
-                int plus_time = max(lat, bs_plans[i].time[k] - 1);
-                t += plus_time;
+                finish = is_reverse ? t : t + bs_plans[i].time[k];
+                int plus_time = lat;
+                t = is_reverse ? t - plus_time : t + plus_time;
                 break;
               }
             }
           }
         }
         if(current_cnt > 0) continue;
-        if(finish < bestFinish) {
+        if(is_reverse ? finish > bestFinish : finish < bestFinish) {
           bestFinish = finish;
           bestSrv = i;
           bestNpu = j;
           bestLat = lat;
+          bestActualFinish = is_reverse ? actual_finish : finish;
           best_bs_plan = move(bs_plan);
           bestUseTime = move(use_time);
         }
@@ -443,13 +507,13 @@ Schedule solve2() {
     }
 
     assert(!is_late_user || bestSrv != -1);
-    if(!is_late_user && bestFinish > u.e) {
+    if(!is_late_user && (is_reverse ? bestFinish < u.s : bestFinish > u.e)) {
       postponed.push_back(idx);
       continue;
     }
 
-    res.score += h_func(double(bestFinish - u.e) / (u.e - u.s));
-    if (bestFinish > u.e) {
+    res.score += h_func(double(bestActualFinish - u.e) / (u.e - u.s));
+    if (bestActualFinish > u.e) {
       timeout_cnt++;
     }
 
@@ -462,6 +526,7 @@ Schedule solve2() {
       freeAt[bestSrv][bestNpu][p.first][p.second] = false;
     }
   }
+  // cerr << "reverse_cnt: " << reverse_cnt << endl;
   res.timeout_rate = (double)timeout_cnt / M;
   res.score *= h_func(timeout_cnt) * p_func(0.0) * 10000;
   return res;
@@ -530,17 +595,26 @@ int main() {
   // assert(variance >= 1 || M < 100);  // 初赛线上存在 variance < 1 的情况
   // for (int i = 0; i < N; i++) assert(memSize[i] > 1000); // 初赛线上存在 memSize[i] = 1000 的情况
 
+  // 削峰预处理
+  get_avg_cnt();
+
   // 获取解决方案
-  Schedule results[3];
-  if (METHOD == 1 || METHOD == 0) results[1] = solve1();
-  if (METHOD == 2 || METHOD == 0) results[2] = solve2();
-  size_t best_idx = 0;
-  for(size_t i = 1; i < 3; ++i) {
-    if(results[i].score > results[best_idx].score) {
+  vector<Schedule> results;
+  size_t best_idx = -1;
+  double best_score = 0;
+  for(size_t i = 0; i < methods.size(); ++i) {
+    if(methods[i].METHOD == 1) {
+      results.push_back(solve1(methods[i].POSTPONE, methods[i].IMMEDIATE, methods[i].BEST_BS));
+    } 
+    if(methods[i].METHOD == 2) {
+      results.push_back(solve2(methods[i].max_parallel, methods[i].min_bs, methods[i].allow_reverse));
+    }
+    if(results[i].score > best_score) {
+      best_score = results[i].score;
       best_idx = i;
     }
   }
-  assert(best_idx != 0);
+  assert(best_idx != -1);
   auto schedule = results[best_idx].schedule;
 
   // 输出
