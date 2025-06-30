@@ -11,13 +11,13 @@ import time
 from pathlib import Path
 
 # ===================== 可自行修改的参数 =====================
-OUTPUT_PREFIX = "n1_g1_k1_a20_b200_m1000_lat20"          # 最终会生成 sample.in / sample.json
+OUTPUT_PREFIX = "n3_g1_k1_a20_b200_m1000_cnt1000.3000"          # 最终会生成 sample.in / sample.json
 
 RAND_SEED     = int(time.time())  # 随机种子；想复现实验可手动改成固定数
 random.seed(RAND_SEED)
 
 # ---------- 单一数值：直接给定 ----------
-N = 1           # 服务器种类数   (1 ≤ N ≤ 10)
+N = 2           # 服务器种类数   (1 ≤ N ≤ 10)
 M = 500         # 用户数量       (1 ≤ M ≤ 500)
 a = 20          # 显存与 batchsize 的关系 (10 ≤ a ≤ 20)
 b = 200         # 同上 (100 ≤ b ≤ 200)
@@ -26,16 +26,16 @@ b = 200         # 同上 (100 ≤ b ≤ 200)
 # 服务器参数
 G_MIN, G_MAX = 1, 1              # g_i   NPU 个数 (1, 10)
 K_MIN, K_MAX = 1, 1              # k_i   推理速度参数 (1, 5)
-MEMP_MIN, MEMP_MAX = 1000, 1000  # m_i   NPU 显存大小 (1000, 2000)
+MEMP_MIN, MEMP_MAX = 1200, 1200  # m_i   NPU 显存大小 (1000, 2000)
 
 # 用户请求
-CNT_MIN, CNT_MAX   = 1, 6000     # cnt_i 样本数 （1, 6000）
+CNT_MIN, CNT_MAX   = 1000, 3000     # cnt_i 样本数 （1, 6000）
 TIME_MIN, TIME_MAX = 0, 60000    # s_i / e_i 的整体区间 (0, 60000)
 START_TIME_MIN, START_TIME_MAX = 0, 60000 # 请求开始时间 s_i (0， 60000)
 CNT_RATE_MIN, CNT_RATE_MAX = 5, 60000  # cnt_i 倍率 (5, 60000) 自定义的
 
 # 通信时延
-LAT_MIN, LAT_MAX = 20, 20        # latency_{i,j}  (10, 20)
+LAT_MIN, LAT_MAX = 10, 20        # latency_{i,j}  (10, 20)
 
 # 若因 cnt_i 太大导致无法满足 5 * cnt_i ≤ e_i - s_i，可放宽搜索次数
 MAX_RETRY_PER_USER = 2000

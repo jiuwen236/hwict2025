@@ -3,10 +3,10 @@ using namespace std;
 
 // 方法1  
 // 最优batch_size / cnt排序 / 初始版本
-// 线上: 82928031 / 79583261 / 74742303  线下: 22481058 / 21481910 / 11103833
+// 线上: 82928031 / 79583261 / 74742303  线下: 2430318 / 2311709 / 1343744
 
 // 自动选择更高分方法 + 削峰
-// 线上: 83653628 / 83707134    线下: 26531703 / 28506170
+// 线上: 83653628 / 83707134    线下: 2869256 / 3048753
 
 // 方法封装
 struct Method {
@@ -43,9 +43,14 @@ struct Method {
 
 // 自动选择最高分方法
 vector<Method> methods = {
-  Method::method1(),
-  Method::method2(),
-  Method::method2(1, 5, 1),
+  // 方法1
+  // Method::method1(0, 1, 0), // 初始版本
+  // Method::method1(1, 0, 0), // cnt排序
+  Method::method1(),        // 最优batch_size
+  // 方法2
+  Method::method2(2, 5, 0),
+  Method::method2(),        // 削峰
+  Method::method2(1, 5, 1), // 削峰 且 非并行
 };
 
 using ll = long long;
@@ -616,6 +621,9 @@ int main() {
   }
   assert(best_idx != -1);
   auto schedule = results[best_idx].schedule;
+
+  // 观测线上数据
+  // assert(best_score < 2000000 || best_score > 3000000); // 不存在200w-300w
 
   // 输出
   for (int i = 0; i < M; i++) {
