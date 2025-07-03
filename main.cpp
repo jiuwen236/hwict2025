@@ -45,6 +45,7 @@ vector<Method> methods = {
   // Method::method1(1, 0, 0), // cnt排序
   Method::method1(),        // 最优batch_size
   // 方法2
+  // Method::method2(1, 5, 0),   // 模拟方法1
   Method::method2(2, 5, 0),   // 初始并行版本
   Method::method2(2, 5, 1),   // 削峰
   Method::method2(1, 5, 1),   // 削峰 且 非并行
@@ -58,13 +59,13 @@ vector<Method> methods = {
 
 // 方法1  
 // 最优batch_size / cnt排序 / 初始版本
-// 线上: 82928031 / 79583261 / 74742303  线下: 2430318 / 2311709 / 1343744
+// 线上: 82928031 / 79583261 / 74742303  线下: 2317302 / 2191198 / 1244726
 
 // 自动选择更高分方法 + 削峰 + 新顺序(6种组合)
-// 线上: 83653628 / 83707134 / 83925065  线下: 2869256 / 3048753 / 3130067
+// 线上: 83653628 / 83707134 / 83925065  线下: 2755016 / 2919554 / 2994092
 // 使用迁移：83841764
 
-// 2(2,5,1): 80927418 
+// 2(2,5,1): 80927418  2(1,5,1): 82794825
 
 using ll = long long;
 using vi = vector<int>;
@@ -73,7 +74,9 @@ using vi = vector<int>;
 mt19937 rng(1);
 
 // debug
-int computing_power, cnt_sum, start_sum, reverse_cnt, min_cnt_dbg=INT_MAX;
+int computing_power, cnt_sum, start_sum, reverse_cnt, max_latency;
+int min_cnt_dbg = INT_MAX, min_latency = INT_MAX;
+double avg_rate;
 
 // 题目常数
 const int MAX_N = 10;
@@ -547,7 +550,7 @@ Schedule solve2(int max_parallel, int min_bs_dfs, bool allow_reverse, int order_
           }
         }
         if(current_cnt > 0) continue;
-        if(is_reverse ? finish > bestFinish : finish < bestFinish) {
+        if(is_reverse ? finish > bestFinish : (finish < bestFinish && (is_late_user || finish <= u.e))) {
           success = true;
           bestFinish = finish;
           bestActualFinish = is_reverse ? actual_finish : finish;
@@ -668,6 +671,8 @@ int main() {
     users[i].id = i;
     cin >> users[i].s >> users[i].e >> users[i].cnt;
     users[i].duration = users[i].e - users[i].s;
+    assert(5 * users[i].cnt <= users[i].duration);
+    avg_rate += double(users[i].duration) / users[i].cnt;
     start_sum += users[i].s;
     cnt_sum += users[i].cnt;
     min_cnt_dbg = min(min_cnt_dbg, users[i].cnt);
@@ -676,11 +681,15 @@ int main() {
     users[i].weight = users[i].cnt;
     // users[i].weight = double(users[i].cnt) / users[i].duration;
   }
+  avg_rate /= M;
+  // cerr << "avg_rate: " << avg_rate << endl;
 
   latency.assign(N, vector<int>(M)); // latency[server][user]
   for (int i = 0; i < N; i++) {
     for (int j = 0; j < M; j++) {
       cin >> latency[i][j];
+      max_latency = max(max_latency, latency[i][j]);
+      min_latency = min(min_latency, latency[i][j]);
     }
   }
 
@@ -737,8 +746,8 @@ int main() {
   
   // assert(best_score < 4000000 || best_score > 5000000); // 存在<200w、400w-500w，不存在200w-400w
   // if(best_score < 2000000)  // <200w时，存在npu_num=1、6，不存在其他
-  //   // npu_num=6的，computing_power>6，存在a=20且b=200且max_mem_size=1000且variance<1，但不存在cnt最小值>1000
-  //   if(npu_num == 6 && A == 20 && B == 200 && max_mem_size == 1000 && variance < 1) {
+  //   // 存在npu_num=6，computing_power=12，a=20且b=200且max_mem_size=1000且variance<1且avg_rate=5，同时不存在cnt最小值>1000或avg_cnt>4000或M<400或min_latency==20
+  //   if(npu_num == 6 && computing_power == 12 && A == 20 && B == 200 && max_mem_size == 1000 && variance < 1 && avg_rate < 5+1e-5) {
   //     assert(0);
   //   }
 

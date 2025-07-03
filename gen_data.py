@@ -11,7 +11,7 @@ import time
 from pathlib import Path
 
 # ===================== 可自行修改的参数 =====================
-OUTPUT_PREFIX = "n3_g2_k1_a20_b200_m1000_s0_rate5"          # 最终会生成 sample.in / sample.json
+OUTPUT_PREFIX = "server1_n3_a20_b200_m1000_cnt100_s0_rate5_lat20"          # 最终会生成 sample.in / sample.json
 
 RAND_SEED     = int(time.time())  # 随机种子；想复现实验可手动改成固定数
 random.seed(RAND_SEED)
@@ -24,18 +24,21 @@ b = 200         # 同上 (100 ≤ b ≤ 200)
 
 # ---------- 多个数值：给定范围，均匀随机 ----------
 # 服务器参数
-G_MIN, G_MAX = 2, 2              # g_i   NPU 个数 (1, 10)
-K_MIN, K_MAX = 1, 1              # k_i   推理速度参数 (1, 5)
+G_MIN, G_MAX = 1, 3              # g_i   NPU 个数 (1, 10)
+K_MIN, K_MAX = 1, 5              # k_i   推理速度参数 (1, 5)
 MEMP_MIN, MEMP_MAX = 1000, 1000  # m_i   NPU 显存大小 (1000, 2000)
 
 # 用户请求
-CNT_MIN, CNT_MAX   = 1, 6000     # cnt_i 样本数 （1, 6000）
+CNT_MIN, CNT_MAX   = 100, 100     # cnt_i 样本数 （1, 6000）
 TIME_MIN, TIME_MAX = 0, 60000    # s_i / e_i 的整体区间 (0, 60000)
 START_TIME_MIN, START_TIME_MAX = 0, 0 # 请求开始时间 s_i (0， 60000)
 CNT_RATE_MIN, CNT_RATE_MAX = 5, 5  # cnt_i 倍率 (5, 60000) 自定义的
 
 # 通信时延
 LAT_MIN, LAT_MAX = 20, 20        # latency_{i,j}  (10, 20)
+
+MANUAL_SERVER = 1
+manual_servers = [[(1,5),(2,2),(3,1)]]
 
 # 若因 cnt_i 太大导致无法满足 5 * cnt_i ≤ e_i - s_i，可放宽搜索次数
 MAX_RETRY_PER_USER = 2000
@@ -45,9 +48,11 @@ MAX_RETRY_PER_USER = 2000
 def gen_servers():
     """生成 N 行服务器参数 (g_i, k_i, m_i)"""
     servers = []
-    for _ in range(N):
+    for i in range(N):
         g = random.randint(G_MIN, G_MAX)
         k = random.randint(K_MIN, K_MAX)
+        if MANUAL_SERVER:
+            g, k = manual_servers[MANUAL_SERVER - 1][i]
         memp = random.randint(MEMP_MIN, MEMP_MAX)
         servers.append((g, k, memp))
     return servers
@@ -115,6 +120,7 @@ def write_json_file(path: Path, servers, users, latency):
     cfg = {
         "version": "0612",
         "seed": RAND_SEED,
+        "manual_server": MANUAL_SERVER,
         "N": N,
         "M": M,
         "a": a,
