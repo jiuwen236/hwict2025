@@ -3,7 +3,7 @@ using namespace std;
 
 // g++ -std=c++17 -O2 test_bs_plan.cpp -o test_bs_plan && ./test_bs_plan
 // main.cpp如有修改，记得复制过来
-int k = 1, m = 2000, a = 10, b = 100;
+int k = 2, m = 1000, a = 20, b = 200;
 int top_k = 4;
 const int MAX_PARALLEL = 2;
 const int MIN_BS = 5;

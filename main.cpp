@@ -1,6 +1,21 @@
 #include <bits/stdc++.h>
 using namespace std;
 
+// Hyperparameter search configuration
+const bool HP_SEARCH = 1;
+const double HP_TIME_LIMIT = 5; // 单位：秒
+const bool RANDOM_SEARCH = 1;  // 关闭时，仅进行爬山法优化
+static const vector<vector<int>> HPARAM_VALUES = {
+  {1,2,3}, // max_parallel  1好像没必要
+  {5},     // min_bs_dfs
+  {0,1,2}, // reverse_mode 1: 进行削峰，2: 按概率决定是否反向
+  {0,1,2}, // order_mode  不迁移时如何选择npu：0: 选择最快的，1: 选择第1个合法解，2: 选择最后一个
+  {0,1}    // move_mode  是否迁移
+};
+
+bool log_method = 0;  // 是否打印不同方法分数信息
+const int TOP_N_METHOD2 = 4;  // 打印前N名method2参数设置
+
 // 方法封装
 struct Method {
   int METHOD;
@@ -11,8 +26,8 @@ struct Method {
   // 方法2
   int max_parallel;
   int min_bs;
-  bool allow_reverse; // 进行削峰
-  int order_mode; // 不迁移时如何选择npu：0: 选择最快的，1: 选择第1个合法解，2: 选择最后一个
+  int reverse_mode;
+  int order_mode;
   int move_mode;
 
   // 方法1
@@ -26,19 +41,19 @@ struct Method {
   }
 
   // 方法2
-  static Method method2(int max_parallel = 2, int min_bs = 5, bool allow_reverse = 1, int order_mode = 0, int move_mode = 0) {
+  static Method method2(int max_parallel = 2, int min_bs = 5, int reverse_mode = 1, int order_mode = 0, int move_mode = 0) {
     Method m;
     m.METHOD = 2;
     m.max_parallel = max_parallel;
     m.min_bs = min_bs;
-    m.allow_reverse = allow_reverse;
+    m.reverse_mode = reverse_mode;
     m.order_mode = order_mode;
     m.move_mode = move_mode;
     return m;
   }
 };
 
-// 自动选择最高分方法
+// 初始方法
 vector<Method> methods = {
   // 方法1
   // Method::method1(0, 1, 0), // 初始版本
@@ -46,26 +61,13 @@ vector<Method> methods = {
   Method::method1(),        // 最优batch_size
   // 方法2
   // Method::method2(1, 5, 0),   // 模拟方法1
-  Method::method2(2, 5, 0),   // 初始并行版本
-  Method::method2(2, 5, 1),   // 削峰
-  Method::method2(1, 5, 1),   // 削峰 且 非并行
-  Method::method2(2, 5, 0, 1),
-  Method::method2(2, 5, 1, 1),
-  Method::method2(1, 5, 1, 1),
-  Method::method2(2, 5, 0, 2),
-  Method::method2(2, 5, 1, 2),
-  Method::method2(1, 5, 1, 2),
+  // Method::method2(2, 5, 0),   // 初始并行版本
+  // Method::method2(2, 5, 1),   // 削峰
+  // Method::method2(1, 5, 1),   // 削峰 且 非并行
+  Method::method2(2, 5, 0, 0, 0),
+  Method::method2(2, 5, 1, 1, 1),
+  Method::method2(2, 5, 1, 2, 0),
 };
-
-// 方法1  
-// 最优batch_size / cnt排序 / 初始版本
-// 线上: 82928031 / 79583261 / 74742303  线下: 2317302 / 2191198 / 1244726
-
-// 自动选择更高分方法 + 削峰 + 新顺序(6种组合)
-// 线上: 83653628 / 83707134 / 83925065  线下: 2755016 / 2919554 / 2994092
-// 使用迁移：83841764
-
-// 2(2,5,1): 80927418  2(1,5,1): 82794825
 
 using ll = long long;
 using vi = vector<int>;
@@ -400,8 +402,7 @@ vector<BS_Plan> get_bs_plan_dfs(int k, int m, int a, int b, vector<double> &bs_r
 }
 
 // 方法2，允许 npu 并行处理多个用户请求
-Schedule solve2(int max_parallel, int min_bs_dfs, bool allow_reverse, int order_mode, int move_mode) {
-  const int reverse_mode = 0; // 按概率决定是否反向。没用
+Schedule solve2(int max_parallel, int min_bs_dfs, int reverse_mode, int order_mode, int move_mode) {
   deque<int> q_user = q_user_ori;
   Schedule res(M);
   int timeout_cnt = 0;
@@ -432,6 +433,11 @@ Schedule solve2(int max_parallel, int min_bs_dfs, bool allow_reverse, int order_
     // 调用函数获取最优bs方案
     bs_plans.emplace_back(get_bs_plan_dfs(speedCoef[i], memSize[i], A, B, bs_ratio, max_parallel, min_bs_dfs)[0]);
     if(log_bs_plan) {
+      // for(int i = 0; i < bs_ratio.size(); ++i) {
+      //   if(bs_ratio[i] > 0) {
+      //     cerr << "bs_ratio[" << i << "]: " << bs_ratio[i] << endl;
+      //   }
+      // }
       cerr << "bs_plans[" << i << "].throughput: " << bs_plans[i].throughput << " loop_time: " << bs_plans[i].loop_time << " left_mem: " << bs_plans[i].left_mem << endl;
       cerr << "bs_plans[" << i << "].batch_size: ";
       for(int bs : bs_plans[i].batch_size) cerr << bs << " ";
@@ -473,14 +479,14 @@ Schedule solve2(int max_parallel, int min_bs_dfs, bool allow_reverse, int order_
     auto &u = users[idx];
     bool is_reverse = false;
     // 通过反向遍历削峰
-    if(allow_reverse && !is_late_user) {
-      if(reverse_mode == 0 && avg_cnt[u.s] > avg_cnt[u.e]) {
+    if(reverse_mode && !is_late_user) {
+      if(reverse_mode == 1 && avg_cnt[u.s] > avg_cnt[u.e]) {
         is_reverse = true;
         reverse_cnt++;
       }
-      if(reverse_mode == 1) {
-        double p1 = pow(avg_cnt[u.s] * 100, 2);
-        double p2 = pow(avg_cnt[u.e] * 100, 2);
+      if(reverse_mode == 2) {
+        double p1 = pow(avg_cnt[u.s] * 100, 1);
+        double p2 = pow(avg_cnt[u.e] * 100, 1);
         double p = dist(rng);
         if(p < p1 / (p1 + p2)) {
           is_reverse = true;
@@ -651,6 +657,214 @@ Schedule solve2(int max_parallel, int min_bs_dfs, bool allow_reverse, int order_
   return res;
 }
 
+// 添加超参搜索辅助结构
+struct HyperParams {
+  int max_parallel;
+  int min_bs_dfs;
+  int reverse_mode;
+  int order_mode;
+  int move_mode;
+};
+
+using HPVec = vector<int>;
+struct VecHash {
+  size_t operator()(HPVec const &v) const noexcept {
+    size_t h = 0;
+    for (int x : v) h = h * 31 + hash<int>()(x);
+    return h;
+  }
+};
+struct VecEq {
+  bool operator()(HPVec const &a, HPVec const &b) const noexcept {
+    return a == b;
+  }
+};
+
+// Hyperparameter search state
+unordered_map<double, vector<HPVec>> score2params;
+unordered_set<HPVec, VecHash, VecEq> seen;
+
+// Top N method2 parameters tracking
+vector<pair<double, HPVec>> topN_method2;
+
+// Function to update top N method2 parameters
+void update_topN_method2(double score, const HPVec& hp) {
+  // Check if this parameter set already exists
+  for(auto& p : topN_method2) {
+    if(p.second == hp) {
+      if(score > p.first) {
+        p.first = score; // Update score if better
+      }
+      return;
+    }
+  }
+  
+  // Add new parameter set
+  topN_method2.push_back({score, hp});
+  
+  // Sort by score (descending) and keep only top N
+  sort(topN_method2.begin(), topN_method2.end(), [](const pair<double, HPVec>& a, const pair<double, HPVec>& b) {
+    return a.first > b.first;
+  });
+  
+  if(topN_method2.size() > TOP_N_METHOD2) {
+    topN_method2.resize(TOP_N_METHOD2);
+  }
+}
+
+// 程序经过的时间
+int get_duration(std::chrono::steady_clock::time_point t0) {
+  return std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+}
+
+Schedule solve() {
+  // ========== 超参数搜索 ==========
+  using namespace std::chrono;
+  const double TIME_LIMIT = HP_TIME_LIMIT;
+  int totalCombos = 1;
+  for(const auto &vals : HPARAM_VALUES) totalCombos *= vals.size();
+  // 初始化搜索集合
+  vector<HPVec> init_hp;
+  for(auto &m : methods) {
+    if(m.METHOD == 2)
+      init_hp.push_back({m.max_parallel, m.min_bs, m.reverse_mode, m.order_mode, m.move_mode});
+  }
+  std::chrono::steady_clock::time_point t0 = std::chrono::steady_clock::now();
+  double bestScore2 = -1;
+  HPVec bestHP2;
+  Schedule bestSol2;
+  for(auto &hp : init_hp) {
+    if(get_duration(t0) >= TIME_LIMIT) break;
+    Schedule sol = solve2(hp[0], hp[1], hp[2], hp[3], hp[4]);
+    double s = sol.score;
+    score2params[s].push_back(hp);
+    seen.insert(hp);
+    update_topN_method2(s, hp);
+    if(s > bestScore2) { bestScore2 = s; bestHP2 = hp; bestSol2 = sol; }
+  }
+  while(HP_SEARCH && get_duration(t0) < TIME_LIMIT && (int)seen.size() < totalCombos) {
+    // 局部爬山优化
+    bool improved = true;
+    while(improved && get_duration(t0) < TIME_LIMIT) {
+      improved = false;
+      for(int pi = 0; pi < (int)HPARAM_VALUES.size(); ++pi) {
+        for(int val : HPARAM_VALUES[pi]) {
+          if(val == bestHP2[pi]) continue;
+          auto cand = bestHP2;
+          cand[pi] = val;
+          if(seen.count(cand)) continue;
+          if(get_duration(t0) >= TIME_LIMIT) break;
+          Schedule sol = solve2(cand[0], cand[1], cand[2], cand[3], cand[4]);
+          double s = sol.score;
+          score2params[s].push_back(cand);
+          seen.insert(cand);
+          update_topN_method2(s, cand);
+          if(s > bestScore2) {
+            bestScore2 = s;
+            bestHP2 = cand;
+            bestSol2 = sol;
+            improved = true;
+            break;
+          }
+        }
+        if(improved || get_duration(t0) >= TIME_LIMIT) break;
+      }
+    }
+    if(!RANDOM_SEARCH)
+      break;
+    // 轮盘赌 + 交叉 + 变异
+    uniform_real_distribution<double> prob01(0.0,1.0);
+    while(get_duration(t0) < TIME_LIMIT && (int)seen.size() < totalCombos) {
+      // 构建轮盘赌分布
+      vector<pair<double,HPVec>> pool; pool.reserve(score2params.size());
+      double sumScore = 0.0;
+      for(auto &kv : score2params) {
+        double sc = kv.first;
+        const auto &vec = kv.second;
+        if(vec.empty()) continue;
+        HPVec hp = vec[rng() % vec.size()];
+        pool.push_back({sc, hp});
+        sumScore += sc;
+      }
+      if(pool.size() < 2 || sumScore <= 0) break;
+
+      auto roulette_pick = [&](const HPVec &avoid)->HPVec {
+        while(true) {
+          double r = prob01(rng) * sumScore;
+          double running = 0.0;
+          for(auto &p : pool) {
+            running += p.first;
+            if(running >= r) {
+              if(p.second != avoid) return p.second;
+              else break;
+            }
+          }
+        }
+      };
+
+      HPVec parent1 = roulette_pick({});
+      HPVec parent2 = roulette_pick(parent1);
+      for(int childIdx=0; childIdx<4; ++childIdx) {
+        if(get_duration(t0) >= TIME_LIMIT) break;
+        HPVec child = parent1;
+        for(int k=0; k<(int)HPARAM_VALUES.size(); ++k) {
+          if(rng() & 1) child[k] = parent2[k];
+        }
+        // 0.05 概率变异
+        if(prob01(rng) < 0.05) {
+          int paramIdx = rng() % (int)HPARAM_VALUES.size();
+          const auto &vals = HPARAM_VALUES[paramIdx];
+          if(vals.size()>1) {
+            int newVal;
+            do {
+              newVal = vals[rng()%vals.size()];
+            } while(newVal == child[paramIdx]);
+            child[paramIdx] = newVal;
+          }
+        }
+        if(seen.count(child)) continue;
+        Schedule sol = solve2(child[0], child[1], child[2], child[3], child[4]);
+        double s = sol.score;
+        score2params[s].push_back(child);
+        seen.insert(child);
+        update_topN_method2(s, child);
+        if(s > bestScore2) {
+          bestScore2 = s;
+          bestHP2 = child;
+          bestSol2 = sol;
+          // 回到爬山步骤
+          improved = true;
+          break;
+        }
+      }
+      if(improved) {
+        // 重新进入爬山搜索
+        break;  // 跳出遗传循环，返回外层重新执行爬山优化
+      }
+    }
+  }
+
+  // 最终方案
+  Schedule sol2, sol1;
+  double score2Final = -1, score1 = -1;
+  
+  sol2 = bestSol2;
+  score2Final = bestScore2;
+  
+  // <500w好像没必要
+  sol1 = solve1(methods[0].POSTPONE, methods[0].IMMEDIATE, methods[0].BEST_BS);
+  score1 = sol1.score;
+  
+  Schedule finalSol;
+  if(score2Final > score1) {
+    finalSol = sol2;
+  } else {
+    finalSol = sol1;
+    if(log_method)
+      cerr << "method1: (" << (int)sol1.score << ")" << endl;
+  }
+  return finalSol;
+}
 
 int main() {
   ios::sync_with_stdio(false);
@@ -711,24 +925,8 @@ int main() {
   // 削峰预处理
   get_avg_cnt();
 
-  // 获取解决方案
-  vector<Schedule> results;
-  size_t best_idx = -1;
-  double best_score = 0;
-  for(size_t i = 0; i < methods.size(); ++i) {
-    if(methods[i].METHOD == 1) {
-      results.push_back(solve1(methods[i].POSTPONE, methods[i].IMMEDIATE, methods[i].BEST_BS));
-    } 
-    if(methods[i].METHOD == 2) {
-      results.push_back(solve2(methods[i].max_parallel, methods[i].min_bs, methods[i].allow_reverse, methods[i].order_mode, methods[i].move_mode));
-    }
-    if(results[i].score > best_score) {
-      best_score = results[i].score;
-      best_idx = i;
-    }
-  }
-  assert(best_idx != -1);
-  auto schedule = results[best_idx].schedule;
+  // 超参搜索
+  auto schedule = solve().schedule;
 
   // 观测线上数据
   // assert(npu_num > 1);  // 初赛线上有 npu_num = 1 的情况, 没有 npu_num = 1 and speedCoef[0] = 1 的情况
@@ -760,6 +958,18 @@ int main() {
     }
     cout << "\n";
   }
+  
+  // Print top N method2 parameters
+  if(log_method) {
+    cerr << "Top" << TOP_N_METHOD2 << " method2: ";
+    for(int i = 0; i < topN_method2.size(); ++i) {
+      if(i > 0) cerr << " | ";
+      const auto& hp = topN_method2[i].second;
+      cerr << "(" << hp[0] << "," << hp[1] << "," << hp[2] << "," << hp[3] << "," << hp[4] << ":" << (int)topN_method2[i].first << ")";
+    }
+    cerr << endl;
+  }
+  
   // cerr << "timeout_rate: " << results[best_idx].timeout_rate * 100 << "%" << " score: " << (int)results[best_idx].score << endl;
   return 0;
 }
