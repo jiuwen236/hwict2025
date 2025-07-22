@@ -74,6 +74,7 @@ vector<BS_Plan> get_bs_plan_dfs(int k, int m, int a, int b, vector<double> &bs_r
                 plan.throughput = total_throughput;
                 plan.loop_time = loop;
                 plan.left_mem = m - current_mem;
+                // if(plan.loop_time == plan.time[0]) // 保证规整，有利于利用剩余显存
                 plans.push_back(plan);
             } else {
               return;

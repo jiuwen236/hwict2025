@@ -34,6 +34,8 @@
 // 数据必须在data文件夹下
 // 自己实现的判题器
 
+const bool fusai = 1;
+
 namespace fs = std::filesystem;
 using pii = std::pair<int, int>;
 
@@ -225,8 +227,17 @@ ScoreDetails compute_score(const std::string& in_file, const std::string& stdout
         }
     }
 
-    int a = static_cast<int>(data[idx++]);
-    int b = static_cast<int>(data[idx++]);
+    int a = -1, b = -1;
+    std::vector<int> a_list, b_list;
+    if(!fusai) {
+        a = static_cast<int>(data[idx++]);
+        b = static_cast<int>(data[idx++]);
+    } else {
+        for (int i = 0; i < M; i++) {
+            a_list.push_back(static_cast<int>(data[idx++]));
+            b_list.push_back(static_cast<int>(data[idx++]));
+        }
+    }
 
     // 解析选手输出
     std::istringstream iss(stdout_str);
@@ -295,8 +306,8 @@ ScoreDetails compute_score(const std::string& in_file, const std::string& stdout
             if (npu_j < 1 || npu_j > g[server_j - 1]) {
                 throw std::runtime_error("Invalid Output (用户" + std::to_string(u + 1) + "的第" + std::to_string(j + 1) + "个NPU编号无效，NPU=" + std::to_string(npu_j) + "，要求1≤NPU≤" + std::to_string(g[server_j - 1]) + ")");
             }
-            if (B_j < 1 || B_j > 1000 || a * B_j + b > m[server_j - 1]) {
-                throw std::runtime_error("Invalid Output (用户" + std::to_string(u + 1) + "的第" + std::to_string(j + 1) + "个批次大小无效，B=" + std::to_string(B_j) + "，要求1≤B≤1000且" + std::to_string(a) + "*B+" + std::to_string(b) + "≤" + std::to_string(m[server_j - 1]) + ")");
+            if (B_j < 1 || B_j > 1000 || (fusai ? a_list[u] * B_j + b_list[u] > m[server_j - 1] : a * B_j + b > m[server_j - 1])) {
+                throw std::runtime_error("Invalid Output (用户" + std::to_string(u + 1) + "的第" + std::to_string(j + 1) + "个批次大小无效，B=" + std::to_string(B_j) + "，要求1≤B≤1000且" + std::to_string(fusai ? a_list[u] : a) + "*B+" + std::to_string(fusai ? b_list[u] : b) + "≤" + std::to_string(m[server_j - 1]) + ")");
             }
             if (time_j < s[u]) {
                 throw std::runtime_error("Invalid Output (用户" + std::to_string(u + 1) + "的第" + std::to_string(j + 1) + "个发送时间过早，time=" + std::to_string(time_j) + "，要求time≥" + std::to_string(s[u]) + ")");
@@ -354,7 +365,7 @@ ScoreDetails compute_score(const std::string& in_file, const std::string& stdout
     for (auto& r : requests) {
         r.arrival = r.time + latency[r.server][r.user];
         r.proc_time = static_cast<int>(std::ceil(r.B / (k[r.server] * std::sqrt(r.B))));
-        r.mem = a * r.B + b;
+        r.mem = fusai ? a_list[r.user] * r.B + b_list[r.user] : a * r.B + b;
         arrival_dict[r.arrival].push_back(&r);
     }
 
@@ -451,7 +462,7 @@ ScoreDetails compute_score(const std::string& in_file, const std::string& stdout
                         scheduled = true;
                     } else {
                         // 显存塞不进了
-                        if (srv.mem_used[rq->npu] + a + b > srv.mem_cap) {
+                        if (!fusai && srv.mem_used[rq->npu] + a + b > srv.mem_cap) {
                             for (int j = i; j < q.size(); j++) {
                                 new_q.push_back(q[j]);
                             }

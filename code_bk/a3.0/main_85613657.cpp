@@ -2,12 +2,12 @@
 using namespace std;
 
 // Hyperparameter search configuration
-const bool HP_SEARCH = 0;
-const double HP_TIME_LIMIT = 10; // 单位：秒
+const bool HP_SEARCH = 1;
+const double HP_TIME_LIMIT = 20; // 单位：秒
 const bool RANDOM_SEARCH = 1;  // 关闭时，仅进行爬山法优化
 static const vector<vector<int>> HPARAM_VALUES = {
   {1,2,3}, // max_parallel  1好像没必要
-  {5,4},     // min_bs_dfs
+  {5},     // min_bs_dfs
   {0,1,2}, // reverse_mode 1: 进行削峰，2: 按概率决定是否反向
   {0,1,2}, // order_mode  不迁移时如何选择npu：0: 选择最快的，1: 选择第1个合法解，2: 选择最后一个
   {0,1}    // move_mode  是否迁移
@@ -65,22 +65,16 @@ vector<Method> methods = {
   // Method::method2(2, 5, 0),   // 初始并行版本
   // Method::method2(2, 5, 1),   // 削峰
   // Method::method2(1, 5, 1),   // 削峰 且 非并行
-  // Method::method2(2, 5, 0, 0, 0),
-  // Method::method2(2, 5, 1, 1, 1),
-  // Method::method2(2, 5, 1, 2, 0),
+  Method::method2(2, 5, 0, 0, 0),
+  Method::method2(2, 5, 1, 1, 1),
+  Method::method2(2, 5, 1, 2, 0),
 };
-
-// 非并行
-// 1545451
-// 非并行 + 并行 (10秒)
-// 1363073 (方法2分数不准)
-
-// 是否加入随机性
-// mt19937 rng(chrono::steady_clock::now().time_since_epoch().count());
-mt19937 rng(1);
 
 using ll = long long;
 using vi = vector<int>;
+
+mt19937 rng(chrono::steady_clock::now().time_since_epoch().count());
+// mt19937 rng(1);
 
 // debug
 int computing_power, cnt_sum, start_sum, reverse_cnt, max_latency;
@@ -178,15 +172,11 @@ Schedule solve1(bool POSTPONE, bool IMMEDIATE, bool BEST_BS) {
 
   // resize
   vector<vector<vector<bool>>> freeAt;
-  vector<vector<vector<int>>> left_mem;
   freeAt.resize(N);
-  left_mem.resize(N);
   for (int i = 0; i < N; i++) {
     freeAt[i].resize(cores[i]);
-    left_mem[i].resize(cores[i]);
     for (int j = 0; j < cores[i]; j++) {
       freeAt[i][j].resize(1000 * 1000 * 9 / npu_num, true);
-      left_mem[i][j].resize(1000 * 1000 * 9 / npu_num, 0);
     }
   }
 
@@ -208,7 +198,6 @@ Schedule solve1(bool POSTPONE, bool IMMEDIATE, bool BEST_BS) {
     ll bestFinish = LLONG_MAX;
     int bestSrv = -1, bestNpu = -1, bestB = 0, bestBnum = 0, bestLat = 0;
     vi bestStartTime, bestUseTime;
-    vi bestLeftMem, bestLeftMemTime;
 
     // 尝试每台服务器
     for (int i = 0; i < N; i++) {
@@ -959,7 +948,7 @@ int main() {
   sort(q_user_ori.begin(), q_user_ori.end(), [&](int x, int y) {
     if (users[x].weight != users[y].weight)
       return users[x].weight < users[y].weight;
-    return users[x].s < users[y].s;
+    return x < y;
   });
   
   for (int i = 0; i < N; i++) {
@@ -971,14 +960,13 @@ int main() {
   get_avg_cnt();
 
   // 超参搜索
-  auto full_schedule = solve();
-  auto schedule = full_schedule.schedule;
+  auto schedule = solve().schedule;
 
   // 观测线上数据
   // assert(npu_num > 1);  // 初赛线上有 npu_num = 1 的情况, 没有 npu_num = 1 and speedCoef[0] = 1 的情况
   // assert(computing_power > 2);  // 初赛线上有 computing_power = 2 的情况
   double avg_cnt = (double)cnt_sum / M;
-  // assert(avg_cnt <= 5998); // 初赛线上存在 avg_cnt < 1500 和 avg_cnt > 5998 (computing_power > 3) 的情况。复赛有<=200的
+  // assert(avg_cnt <= 5998); // 初赛线上存在 avg_cnt < 1500 和 avg_cnt > 5998 (computing_power > 3) 的情况
   double avg_start = (double)start_sum / M;
   double variance = 0; // 开始时间的平均L1距离
   for (int i = 0; i < M; i++)
@@ -1016,6 +1004,6 @@ int main() {
     cerr << endl;
   }
   
-  // cerr << "timeout_rate: " << full_schedule.timeout_rate * 100 << "%" << " score: " << (int)full_schedule.score << endl;
+  // cerr << "timeout_rate: " << results[best_idx].timeout_rate * 100 << "%" << " score: " << (int)results[best_idx].score << endl;
   return 0;
 }
