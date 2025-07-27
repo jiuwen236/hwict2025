@@ -29,12 +29,13 @@
 
 // 使用方法：
 // 1. 编译本文件： g++ -O3 -march=native judge.cpp -o judge
-// 2. command: ./judge [-cpp cpp_file_path]
+// 2. command: ./judge [--cpp ./main.cpp] [--time 30]
 // 3. output file: score.log (in the same directory as the cpp file)
 // 数据必须在data文件夹下
 // 自己实现的判题器
 
 const bool fusai = 1;
+std::string compile_cmd = "g++ -O3 -march=native -std=c++17 ";
 
 namespace fs = std::filesystem;
 using pii = std::pair<int, int>;
@@ -57,7 +58,7 @@ struct ScoreDetails {
 
 // 编译C++文件
 void compile_cpp(const std::string& cpp_file, const std::string& exe_path, const std::string& log_file) {
-    std::string cmd = "g++ -O2 -std=c++17 " + cpp_file + " -o " + exe_path;
+    std::string cmd = compile_cmd + cpp_file + " -o " + exe_path;
     int status = std::system(cmd.c_str());
     if (status != 0) {
         std::ofstream f(log_file);
@@ -512,7 +513,9 @@ ScoreDetails compute_score(const std::string& in_file, const std::string& stdout
     details.K = 0;
     for (int i = 0; i < M; i++) {
         if (user_end[i] > e[i]) details.K++;
-        // if (user_end[i] > e[i] && i < 10) judge_log += "user " + std::to_string(i) + " end time: " + std::to_string(user_end[i]) + " " + std::to_string(e[i]) + "\n";
+        // debug，打印超时用户
+        // if (user_end[i] > e[i]) 
+            // judge_log += "user " + std::to_string(i) + " end time: " + std::to_string(user_end[i]) + " " + std::to_string(e[i]) + "\n";
     }
 
     details.h_K = h(details.K);
@@ -552,8 +555,13 @@ ScoreDetails compute_score(const std::string& in_file, const std::string& stdout
 int main(int argc, char* argv[]) {
     // 解析命令行参数
     std::string cpp_path = "main.cpp";
-    if (argc > 2 && std::string(argv[1]) == "-cpp") {
-        cpp_path = argv[2];
+    int timeout_seconds = 30;
+    for (int i = 1; i < argc; ++i) {
+        if (std::string(argv[i]) == "--cpp" && i + 1 < argc) {
+            cpp_path = argv[++i];
+        } else if (std::string(argv[i]) == "--time" && i + 1 < argc) {
+            timeout_seconds = std::stoi(argv[++i]);
+        }
     }
 
     // 确定基础路径和文件路径
@@ -607,7 +615,7 @@ int main(int argc, char* argv[]) {
         
         try {
             auto start = std::chrono::steady_clock::now();
-            std::string output = run_program(exe_path.string(), infile.string(), 30);
+            std::string output = run_program(exe_path.string(), infile.string(), timeout_seconds);
             auto end = std::chrono::steady_clock::now();
             dur = std::chrono::duration<double>(end - start).count();
             total_time += dur;

@@ -8,3 +8,4 @@ judge
 __pycache__
 .vscode
 data_bk
+private*
