@@ -3,13 +3,13 @@ using namespace std;
 
 // g++ -std=c++17 -O2 test_bs_plan.cpp -o test_bs_plan && ./test_bs_plan
 // main.cpp如有修改，记得复制过来
-int k = 2, m = 1000, a = 20, b = 200;
+int k = 1, m = 1227, a = 20, b = 200;
 int top_k = 4;
-const int MAX_PARALLEL = 2;
-const int MIN_BS = 5;
+const int MAX_PARALLEL = 3;
+const int MIN_BS = 3;
 vector<double> bs_ratio(50);
 void init_bs_ratio() {
-    // bs_ratio[20] = 0.1;
+    // bs_ratio[20] = 1;
     // bs_ratio[40] = 1;
 }
 
@@ -102,14 +102,18 @@ vector<BS_Plan> get_bs_plan_dfs(int k, int m, int a, int b, vector<double> &bs_r
         if (abs(p1.throughput - p2.throughput) > 1e-9) {
             return p1.throughput > p2.throughput;
         }
-        return p1.batch_size < p2.batch_size;
+        // if (p1.loop_time != p2.loop_time) {
+        //     return p1.loop_time < p2.loop_time;
+        // }
+        // if (p1.left_mem != p2.left_mem) {
+        //     return p1.left_mem < p2.left_mem;
+        // }
+        return p1.batch_size > p2.batch_size;
     });
 
     plans.erase(unique(plans.begin(), plans.end(), [](const BS_Plan& p1, const BS_Plan& p2) {
         return p1.batch_size == p2.batch_size;
     }), plans.end());
-
-    assert(plans.size() > 0);
 
     return plans;
 }

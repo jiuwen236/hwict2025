@@ -2,25 +2,29 @@
 using namespace std;
 
 // 本地评分(linux)执行 ./judge
-// 简单运行：g++ main.cpp -o main && ./main < data/n2_g1_k1_a20_b200.in > tmp.out
+// 简单运行：g++ -O2 main.cpp -o main && ./main < data/n2_g1_k1_a20_b200.in > tmp.out
 
 // Hyperparameter search configuration
 const bool HP_SEARCH = 1;
 const double HP_TIME_LIMIT = 10; // 单位：秒
 const bool RANDOM_SEARCH = 1;  // 关闭时，仅进行爬山法优化
 static const vector<vector<int>> HPARAM_VALUES = {
-  {1}, // parallel_num/max_parallel  1好像没必要
+  {2,3,4,1}, // parallel_num/max_parallel  1好像没必要
   {1,2}, // reverse_mode 1: 进行削峰，2: 按概率决定是否反向
-  {0,1,2}, // order_mode  不迁移时如何选择npu：0: 选择最快的，1: 选择第1个合法解，2: 选择最后一个
+  {1,2,4,5,0}, // order_mode  不迁移时如何选择npu：0: 选择最快的，1: 选择第1个合法解，2: 选择最后一个，3: 随机顺序，4: 每次随机，5: 处理能力
   {1}    // move_mode  是否迁移
 };
 
 const bool use_method1 = 1; // 是否使用方法1
-const bool USE_LAST_SEND = 0; // 最后发送的 or 最晚完成的
+const bool USE_LAST_SEND = 0; // 最后发送的 or 最晚完成的。目前还不能改
+const bool SEARCH_BS_PLAN = 1; // 按照以前的方式规划batch
 
 const bool fusai = 1;
+
+
 bool log_method = 1;  // 是否打印不同方法分数信息
-const int TOP_N_METHOD2 = 4;  // 打印前N名method2参数设置
+const int TOP_N_METHOD2 = 3;  // 打印前N名method2参数设置
+const bool log_cache_cnt = 0 && SEARCH_BS_PLAN;
 
 // 方法封装
 struct Method {
@@ -67,7 +71,7 @@ vector<Method> methods = {
   // 方法2
   // Method::method2(1, 0),   // 模拟方法1
   // Method::method2(2, 0),   // 初始并行版本
-  Method::method2(2, 1, 1, 1),
+  Method::method2(2, 1, 5, 1),
   // Method::method2(1, 1, 1, 1), // debug
 };
 
@@ -85,7 +89,7 @@ using vi = vector<int>;
 using pii = pair<int, int>;
 
 // debug
-int computing_power, cnt_sum, start_sum, reverse_cnt, max_latency;
+int computing_power, cnt_sum, start_sum, reverse_cnt, max_latency, cache_cnt;
 int min_cnt_dbg = INT_MAX, min_latency = INT_MAX;
 double avg_rate;
 
@@ -327,6 +331,153 @@ struct BS_Plan {
   int left_mem; // 剩余显存
 };
 
+// DFS枚举方案，满足条件的所有方案，按吞吐量降序排序
+// 允许指定bs比例，如要求bs[20]=0.1，合法方案中bs>=20的数量/batch_size.size()应至少为0.1
+// 构造一个递归函数，遍历不大于之前的bs，直到显存不支持该bs
+vector<BS_Plan> get_bs_plan_dfs(int k, int m, int a, int b, vector<double> &bs_ratio, int max_parallel = 2, int min_bs = 5) {
+    vector<BS_Plan> plans;
+    
+    function<void(int, vector<int>, int)> dfs = 
+        [&](int current_mem, vector<int> current_bs, int max_bs) {
+        
+        if (!current_bs.empty()) {
+            bool ok = true;
+            if (!bs_ratio.empty()) {
+                int n = current_bs.size();
+                for (size_t i = 0; i < bs_ratio.size(); ++i) {
+                    if (bs_ratio[i] > 1e-9) {
+                        int cnt = 0;
+                        for (int bs : current_bs) {
+                            if (bs >= (int)i) {
+                                cnt++;
+                            }
+                        }
+                        if ((double)cnt / n < bs_ratio[i]) {
+                            ok = false;
+                            break;
+                        }
+                    }
+                }
+            }
+            
+            if (ok) {
+                BS_Plan plan;
+                double total_throughput = 0;
+                int loop = 1;
+                
+                vector<pair<int, int>> vp;
+                for (int bs : current_bs) {
+                    int t = (int)ceil(sqrt((double)bs) / k);
+                    vp.push_back({bs, t});
+                    total_throughput += (double)bs / t;
+                    loop = loop / gcd(loop, t) * t;
+                }
+                
+                sort(vp.begin(), vp.end(), [](const pair<int, int>& a, const pair<int, int>& b) {
+                    return a.first < b.first;
+                });
+                for(auto& p : vp) {
+                    plan.batch_size.push_back(p.first);
+                    plan.time.push_back(p.second);
+                }
+
+                plan.throughput = total_throughput;
+                plan.loop_time = loop;
+                plan.left_mem = m - current_mem;
+                // if(plan.loop_time == plan.time[0]) // 保证规整，有利于利用剩余显存
+                plans.push_back(plan);
+            } else {
+              return;
+            }
+        }
+        
+        if(current_bs.size() >= max_parallel) return;  // 降低并行度
+
+        for (int bs = max_bs; bs >= min_bs; --bs) {
+            int mem_needed = a * bs + b;
+            if (current_mem + mem_needed <= m) {
+                vector<int> next_bs = current_bs;
+                next_bs.push_back(bs);
+                dfs(current_mem + mem_needed, next_bs, bs);
+            }
+        }
+    };
+    
+    int max_possible_bs = (m - b) / a;
+    if (max_possible_bs > 0) {
+        dfs(0, {}, max_possible_bs);
+    }
+    
+    sort(plans.begin(), plans.end(), [](const BS_Plan& p1, const BS_Plan& p2) {
+        if (abs(p1.throughput - p2.throughput) > 1e-9) {
+            return p1.throughput > p2.throughput;
+        }
+        // if (p1.loop_time != p2.loop_time) {
+        //     return p1.loop_time < p2.loop_time;
+        // }
+        // if (p1.left_mem != p2.left_mem) {
+        //     return p1.left_mem < p2.left_mem;
+        // }
+        return p1.batch_size > p2.batch_size;
+    });
+
+    plans.erase(unique(plans.begin(), plans.end(), [](const BS_Plan& p1, const BS_Plan& p2) {
+        return p1.batch_size == p2.batch_size;
+    }), plans.end());
+
+    return plans;
+}
+
+// Add caching for BS_Plan: parameter to best plan cache
+struct BSKey {
+    int k, m, a, b, max_parallel, min_bs;
+    // removed bs_ratio since it's always empty
+};
+struct BSKeyHash {
+    size_t operator()(BSKey const &key) const noexcept {
+        size_t h = 146527;
+        h = h * 31 + std::hash<int>()(key.k);
+        h = h * 31 + std::hash<int>()(key.m);
+        h = h * 31 + std::hash<int>()(key.a);
+        h = h * 31 + std::hash<int>()(key.b);
+        h = h * 31 + std::hash<int>()(key.max_parallel);
+        h = h * 31 + std::hash<int>()(key.min_bs);
+        return h;
+    }
+};
+struct BSKeyEq {
+    bool operator()(BSKey const &lhs, BSKey const &rhs) const noexcept {
+        return lhs.k == rhs.k && lhs.m == rhs.m && lhs.a == rhs.a && lhs.b == rhs.b &&
+               lhs.max_parallel == rhs.max_parallel && lhs.min_bs == rhs.min_bs;
+    }
+};
+static const size_t BS_PLAN_CACHE_MAX = 1000000; // (~100MB)
+static std::unordered_map<BSKey, BS_Plan, BSKeyHash, BSKeyEq> bs_plan_cache;
+
+// Return cached or compute best BS_Plan using DFS
+BS_Plan get_bs_plan_cache(int k, int m, int a, int b, int max_parallel, int min_bs) {
+    BSKey key {k, m, a, b, max_parallel, min_bs};
+    auto it = bs_plan_cache.find(key);
+    if (it != bs_plan_cache.end()) {
+        return it->second;
+    }
+    cache_cnt++;
+    vector<double> bs_ratio;
+    vector<BS_Plan> plans = get_bs_plan_dfs(k, m, a, b, bs_ratio, max_parallel, min_bs);
+    BS_Plan best_plan;
+    if (!plans.empty()) {
+        best_plan = plans[0];
+    }
+    // random eviction when cache full
+    if (bs_plan_cache.size() >= BS_PLAN_CACHE_MAX) {
+        auto it_evict = bs_plan_cache.begin();
+        std::advance(it_evict, rng() % bs_plan_cache.size());
+        bs_plan_cache.erase(it_evict);
+    }
+    bs_plan_cache.emplace(key, best_plan);
+    return best_plan;
+}
+
 pii get_bs(int memory, int a, int b, int sp) {
   int bs = (memory - b) / a;
   double time = sqrt((double)bs) / sp;
@@ -347,6 +498,7 @@ pii get_bs(int memory, int a, int b, int sp) {
 
 // 方法2，允许 npu 并行处理多个用户请求
 Schedule solve2(int parallel_num, int reverse_mode, int order_mode, int move_mode) {
+  const bool smaller_bs = 1; // 后续显存不足时，允许尝试更小的bs
   deque<int> q_user = q_user_ori;
   Schedule res(M);
   int timeout_cnt = 0;
@@ -355,11 +507,36 @@ Schedule solve2(int parallel_num, int reverse_mode, int order_mode, int move_mod
 
   // 占用情况初始化
   vector<vector<vector<uint16_t>>> freeAt(N);
+  vector<vector<vector<uint8_t>>> parallel_cnt(N);
   for(size_t i = 0; i < N; ++i) {
     freeAt[i].resize(cores[i]);
+    if(SEARCH_BS_PLAN)
+      parallel_cnt[i].resize(cores[i]);
     for(size_t j = 0; j < cores[i]; ++j) {
       freeAt[i][j].resize(1000 * 1000 * 27 / npu_num, memSize[i]);
+      if(SEARCH_BS_PLAN)
+        parallel_cnt[i][j].resize(1000 * 1000 * 27 / npu_num, 0);
     }
+  }
+
+  // 遍历顺序
+  vector<pii> npu_order, random_order, reverse_order;
+  for(int i = 0; i < N; ++i) {
+    for(int j = 0; j < cores[i]; ++j) {
+      npu_order.push_back({i, j});
+    }
+  }
+  random_order = npu_order;
+  shuffle(random_order.begin(), random_order.end(), rng);
+  reverse_order = npu_order;
+  reverse(reverse_order.begin(), reverse_order.end());
+  if(order_mode == 5) {
+    sort(npu_order.begin(), npu_order.end(), [&](const pii& a, const pii& b) {
+      if(speedCoef[a.first] != speedCoef[b.first]) {
+        return speedCoef[a.first] > speedCoef[b.first];
+      }
+      return memSize[a.first] > memSize[b.first];
+    });
   }
 
   // 逐个添加用户
@@ -401,163 +578,190 @@ Schedule solve2(int parallel_num, int reverse_mode, int order_mode, int move_mod
     bool success = false;
 
     // 遍历顺序
-    vector<int> server_order(N);
-    iota(server_order.begin(), server_order.end(), 0);
-    if(order_mode == 2) reverse(server_order.begin(), server_order.end());
-    vector<vi> core_order(N);
-    for(int i = 0; i < N; ++i) {
-      core_order[i].resize(cores[i]);
-      iota(core_order[i].begin(), core_order[i].end(), 0);
-      if(order_mode == 2) reverse(core_order[i].begin(), core_order[i].end());
+    bool real_order_mode = order_mode;
+    if(is_late_user) real_order_mode = 3;
+    auto order_p = &npu_order;
+    if(real_order_mode == 2) order_p = &reverse_order;
+    if(real_order_mode == 3) order_p = &random_order;
+    if(real_order_mode == 4) {
+      shuffle(random_order.begin(), random_order.end(), rng);
+      order_p = &random_order;
     }
     // 不迁移的并行，会考虑削峰
-    for(int i : server_order) {
-      // if (u_id % N != i) continue;
+    for(auto [i, j] : *order_p) {
       int lat = latency[i][u.id];
       int current_cnt = u.cnt;
-      for(int j : core_order[i]) {
-        current_cnt = u.cnt;
-        deque<array<int, 4>> schedule;
-        vector<array<int, 5>> use_time; 
-        int start = u.s + lat;
-        int finish = is_reverse ? INT_MAX : -1;
-        int actual_finish = -1;
-        int end_time = is_late_user ? INT_MAX : u.e;
-        // 逐毫秒检查是否可以发送请求
-        for(int t = is_reverse ? u.e - 1 : start; is_reverse ? t >= start : t <= end_time; is_reverse ? --t : ++t) {
-          if(freeAt[i][j][t] < user_b[u.id] + user_a[u.id]) continue;
-          if(current_cnt <= 0) break;
-          if(t == 200000) 
-            bool debug = true;
-          // 决策batch_size
-          bool valid = true;
-          int loop_cnt = 3, bs, proc_time, space;
-          while(loop_cnt--) {
-            int mem_size = -1;
-            if(loop_cnt == 2) 
-              mem_size = min(memSize[i] / parallel_num + memSize[i] / 10, (int)freeAt[i][j][t]);  // 可调参
-            else if(loop_cnt == 1) 
-              mem_size = min(int(memSize[i] / parallel_num * 1.3 + memSize[i] * 0.15), (int)freeAt[i][j][t]);
-            else
-              mem_size = (int)freeAt[i][j][t];
+      deque<array<int, 4>> schedule;
+      vector<array<int, 5>> use_time; 
+      int start = u.s + lat;
+      int finish = is_reverse ? INT_MAX : -1;
+      int actual_finish = -1;
+      int end_time = is_late_user ? INT_MAX : u.e;
+      // 逐毫秒检查是否可以发送请求
+      for(int t = is_reverse ? u.e - 1 : start; is_reverse ? t >= start : t <= end_time; is_reverse ? --t : ++t) {
+        if(freeAt[i][j][t] < user_b[u.id] + user_a[u.id]) continue;
+        if(current_cnt <= 0) break;
+        if(t == 200000) 
+          bool debug = true;
+        // 决策batch_size
+        bool valid = true;
+        int loop_cnt = 3, bs, proc_time, space;
+        if(SEARCH_BS_PLAN) loop_cnt = 1;
+        while(loop_cnt--) {
+          valid = true;
+          int mem_size = -1;
+          if(loop_cnt == 2) 
+            mem_size = min(memSize[i] / parallel_num + memSize[i] / 10, (int)freeAt[i][j][t]);  // 可调参
+          else if(loop_cnt == 1) 
+            mem_size = min(int(memSize[i] / parallel_num * 1.3 + memSize[i] * 0.15), (int)freeAt[i][j][t]);
+          else
+            mem_size = (int)freeAt[i][j][t];
+          if(SEARCH_BS_PLAN){
+            int parallel = max(parallel_num - parallel_cnt[i][j][t], 1);
+            int min_bs = (u.cnt - 1) / MAX_T_NUM + 1;
+            if(double(u.cnt - current_cnt + min_bs) / (schedule.size() + 1) * (MAX_T_NUM - 1) < u.cnt) min_bs++;
+            BS_Plan plan = get_bs_plan_cache(speedCoef[i], mem_size, user_a[u.id], user_b[u.id], parallel, min_bs);
+            if(plan.batch_size.size() == 0) {
+              valid = false;
+              break;
+            }
+            bs = plan.batch_size[0];  // 用最小的
+            proc_time = plan.time[0];
+          } else {
             auto [bs_tmp, proc_time_tmp] = get_bs(mem_size, user_a[u.id], user_b[u.id], speedCoef[i]);
             bs = bs_tmp;
             proc_time = proc_time_tmp;
-            int minus_num = 1; // 0: 是最后一个请求 1: 正常
-            if(current_cnt <= bs) {
-              bs = current_cnt;
-              proc_time = get_process_time(bs, speedCoef[i]);
-              minus_num = 0;
+          }
+          int minus_num = 1; // 0: 是最后一个请求 1: 正常
+          if(current_cnt <= bs) {
+            bs = current_cnt;
+            proc_time = get_process_time(bs, speedCoef[i]);
+            minus_num = 0;
+          }
+          if(!SEARCH_BS_PLAN && double(u.cnt - current_cnt + bs) / (schedule.size() + 1) * (MAX_T_NUM - minus_num) < u.cnt) {
+            if(loop_cnt >= 1) continue;
+            if(loop_cnt == 0) {
+              valid = false;
+              break;
             }
-            if(double(u.cnt - current_cnt + bs) / (schedule.size() + 1) * (MAX_T_NUM - minus_num) < u.cnt) {
-              if(loop_cnt >= 1) continue;
-              if(loop_cnt == 0) {
-                valid = false;
-                break;
-              }
-            }
-            if(!valid) continue;
-            // 探测后续是否有空间
-            bool has_space = false;
-            if(proc_time == 1) {
-              has_space = true;
-            }
-            space = bs * user_a[u.id] + user_b[u.id];
-            while(!has_space) {
-              if(!is_reverse) {
-                int tmp_t = t + 1;
-                for(; tmp_t < t + proc_time; ++tmp_t) {
-                  if(freeAt[i][j][tmp_t] < space) {
-                    break;
-                  }
-                }
-                if(tmp_t == t + proc_time) {
-                  has_space = true;
-                }
-              } else {
-                int tmp_t = t - 1;
-                for(; tmp_t > t - proc_time; --tmp_t) {
-                  if(freeAt[i][j][tmp_t] < space) {
-                    break;
-                  }
-                }
-                if(tmp_t == t - proc_time) {
-                  has_space = true;
-                }
-              }
-              if(!has_space) {
-                proc_time--;
-                if(proc_time == 1) has_space = true;
-                bs = proc_time * proc_time * speedCoef[i] * speedCoef[i];
-                space = bs * user_a[u.id] + user_b[u.id];
-                minus_num = 1;
-              }
-            }
-            if(double(u.cnt - current_cnt + bs) / (schedule.size() + 1) * (MAX_T_NUM - minus_num) < u.cnt) {
-              if(loop_cnt >= 1) continue;
-              if(loop_cnt == 0) {
-                valid = false;
-                break;
-              }
-            }
-            break;
           }
           if(!valid) continue;
-          // 记录下来
-          if(!is_reverse){
-            schedule.push_back({t - lat, i + 1, j + 1, bs});
-            use_time.push_back({i, j, space, t, t + proc_time});
+          // 探测后续是否有空间
+          bool has_space = false;
+          if(proc_time == 1) {
+            has_space = true;
           }
-          else {
-            if(t - proc_time + 1 - lat < start) break;
-            schedule.push_front({t - proc_time + 1 - lat, i + 1, j + 1, bs});
-            use_time.push_back({i, j, space, t - proc_time + 1, t + 1});
+          space = bs * user_a[u.id] + user_b[u.id];
+          while(!has_space) {
+            if(!is_reverse) {
+              int tmp_t = t + 1;
+              for(; tmp_t < t + proc_time; ++tmp_t) {
+                if(freeAt[i][j][tmp_t] < space) {
+                  break;
+                }
+              }
+              if(tmp_t == t + proc_time) {
+                has_space = true;
+              }
+            } else {
+              int tmp_t = t - 1;
+              for(; tmp_t > t - proc_time; --tmp_t) {
+                if(freeAt[i][j][tmp_t] < space) {
+                  break;
+                }
+              }
+              if(tmp_t == t - proc_time) {
+                has_space = true;
+              }
+            }
+            if(!has_space) {
+              if(!smaller_bs) {
+                break;
+              }
+              proc_time--;
+              if(proc_time == 1) has_space = true;
+              bs = proc_time * proc_time * speedCoef[i] * speedCoef[i];
+              space = bs * user_a[u.id] + user_b[u.id];
+              minus_num = 1;
+            }
           }
+          if(!has_space) {
+            valid = false;
+            continue;
+          }
+          if(smaller_bs && double(u.cnt - current_cnt + bs) / (schedule.size() + 1) * (MAX_T_NUM - minus_num) < u.cnt) {
+            if(loop_cnt >= 1) continue;
+            if(loop_cnt == 0) {
+              valid = false;
+              break;
+            }
+          }
+          break;
+        }
+        if(!valid) continue;
+        // 记录下来
+        if(!is_reverse){
+          schedule.push_back({t - lat, i + 1, j + 1, bs});
+          use_time.push_back({i, j, space, t, t + proc_time});  // 前闭后开
+        }
+        else {
+          if(t - proc_time + 1 - lat < start) break;
+          schedule.push_front({t - proc_time + 1 - lat, i + 1, j + 1, bs});
+          use_time.push_back({i, j, space, t - proc_time + 1, t + 1});
+        }
+        if(parallel_num == 1 && speedCoef[i] == 1){
           for(int k = use_time.back()[3]; k < use_time.back()[4]; ++k) {
             freeAt[i][j][k] -= space;
+            if(SEARCH_BS_PLAN) parallel_cnt[i][j][k]++;
           }
-          if(is_reverse && schedule.size() == 1)
-            actual_finish = t + 1;
-          if(!is_reverse) {
-            if(USE_LAST_SEND)
-              finish = t + proc_time;
-            else
-              finish = max(t + proc_time, finish);
-          } else {
-            finish = min(t - proc_time + 1, finish);
-          }
-          current_cnt -= bs;
-          int plus_time = lat;
-          t = is_reverse ? t - proc_time + 1 - plus_time : t + plus_time;
         }
+        if(is_reverse && schedule.size() == 1)
+          actual_finish = t + 1;
+        if(!is_reverse) {
+          if(USE_LAST_SEND)
+            finish = t + proc_time;
+          else
+            finish = max(t + proc_time, finish);
+        } else {
+          finish = min(t - proc_time + 1, finish);
+        }
+        current_cnt -= bs;
+        // int plus_time = lat;
+        int plus_time = (lat + proc_time) / proc_time * proc_time - 1;  // 保持整数倍，对多数数据有效
+        t = is_reverse ? t - proc_time + 1 - plus_time : t + plus_time;
+      }
+      if(parallel_num == 1 && speedCoef[i] == 1){
         for(auto& p : use_time) {
           for(int k = p[3]; k < p[4]; ++k) {
-            freeAt[p[0]][p[1]][k] += p[2];
+              freeAt[p[0]][p[1]][k] += p[2];
+              if(SEARCH_BS_PLAN) parallel_cnt[p[0]][p[1]][k]--;
           }
         }
-        if(current_cnt > 0) continue;
-        if(is_reverse ? finish > bestFinish : (finish < bestFinish && (is_late_user || finish <= u.e))) {
-          success = true;
-          bestFinish = finish;
-          bestActualFinish = is_reverse ? actual_finish : finish;
-          bestSchedule = move(schedule);
-          bestUseTime = move(use_time);
-          if(order_mode > 0) break;
-        }
       }
-      if(order_mode > 0 && success) break;
+      if(current_cnt > 0) continue;
+      if(is_reverse ? finish > bestFinish : (finish < bestFinish && (is_late_user || finish <= u.e))) {
+        success = true;
+        bestFinish = finish;
+        bestActualFinish = is_reverse ? actual_finish : finish;
+        bestSchedule = move(schedule);
+        bestUseTime = move(use_time);
+        if(real_order_mode > 0) break;
+      }
     }
 
     // 允许迁移的并行，解决超时的用户，采用迁移冷却期来使迁移次数尽量小
     if(!success && move_mode == 1) {
-      vector<double> cooling_list = {1.5, 1};
+      vector<double> cooling_list = {2,1};
       for(double cooling : cooling_list) {
         bestActualFinish = u.s;
         bestMoveCnt = 0;
         bestSchedule.clear();
-        for(auto& p : bestUseTime) {
-          for(int k = p[3]; k < p[4]; ++k) {
-            freeAt[p[0]][p[1]][k] += p[2];
+        if(parallel_num == 1){
+          for(auto& p : bestUseTime) {
+            for(int k = p[3]; k < p[4]; ++k) {
+              freeAt[p[0]][p[1]][k] += p[2];
+              if(SEARCH_BS_PLAN) parallel_cnt[p[0]][p[1]][k]--;
+            }
           }
         }
         bestUseTime.clear();
@@ -583,14 +787,29 @@ Schedule solve2(int parallel_num, int reverse_mode, int order_mode, int move_mod
               for(; t <= u.e; ++t) {
                 if(freeAt[i][j][t] < user_b[u.id] + user_a[u.id]) continue;
                 int mem_size = (int)freeAt[i][j][t];  // 尽可能大
-                auto [bs, proc_time] = get_bs(mem_size, user_a[u.id], user_b[u.id], speedCoef[i]);
+                int bs = 0, proc_time = 0;
+                if(SEARCH_BS_PLAN){
+                  int parallel = max(parallel_num - parallel_cnt[i][j][t], 1);
+                  int min_bs = (u.cnt - 1) / MAX_T_NUM + 1;
+                  if(double(u.cnt - current_cnt + min_bs) / (bestSchedule.size() + 1) * (MAX_T_NUM - 1) < u.cnt) min_bs++;
+                  BS_Plan plan = get_bs_plan_cache(speedCoef[i], mem_size, user_a[u.id], user_b[u.id], parallel, min_bs);
+                  if(plan.batch_size.size() == 0) {
+                    continue;
+                  }
+                  bs = plan.batch_size[0];  // 用最小的，用最大的也可
+                  proc_time = plan.time[0];
+                } else {
+                  auto [bs_tmp, proc_time_tmp] = get_bs(mem_size, user_a[u.id], user_b[u.id], speedCoef[i]);
+                  bs = bs_tmp;
+                  proc_time = proc_time_tmp;
+                }
                 int minus_num = 1;
                 if(current_cnt <= bs) {
                   bs = current_cnt;
                   minus_num = 0;
                   proc_time = get_process_time(bs, speedCoef[i]);
                 }
-                if(double(u.cnt - current_cnt + bs) / (bestSchedule.size() + 1) * (MAX_T_NUM - minus_num) < u.cnt) continue;
+                if(!SEARCH_BS_PLAN && double(u.cnt - current_cnt + bs) / (bestSchedule.size() + 1) * (MAX_T_NUM - minus_num) < u.cnt) continue;
                 // 探测后续是否有空间
                 bool has_space = false;
                 if(proc_time == 1) {
@@ -608,6 +827,9 @@ Schedule solve2(int parallel_num, int reverse_mode, int order_mode, int move_mod
                     has_space = true;
                   }
                   if(!has_space) {
+                    if(!smaller_bs) {
+                      break;
+                    }
                     proc_time--;
                     if(proc_time == 1) has_space = true;
                     bs = proc_time * proc_time * speedCoef[i] * speedCoef[i];
@@ -615,7 +837,8 @@ Schedule solve2(int parallel_num, int reverse_mode, int order_mode, int move_mod
                     space = bs * user_a[u.id] + user_b[u.id];
                   }
                 }
-                if(double(u.cnt - current_cnt + bs) / (bestSchedule.size() + 1) * (MAX_T_NUM - minus_num) < u.cnt) continue;
+                if(!has_space) continue;
+                if(smaller_bs && double(u.cnt - current_cnt + bs) / (bestSchedule.size() + 1) * (MAX_T_NUM - minus_num) < u.cnt) continue;
                 // 是否更快
                 if(t - lat < schedule_item[0]) {
                   schedule_item = {t - lat, i + 1, j + 1, bs};
@@ -640,8 +863,11 @@ Schedule solve2(int parallel_num, int reverse_mode, int order_mode, int move_mod
             bestActualFinish = max(bestActualFinish, use_time_item[4]);
           bestSchedule.push_back(schedule_item);
           bestUseTime.push_back(use_time_item);
-          for(int k = use_time_item[3]; k < use_time_item[4]; ++k) {
-            freeAt[server][npu][k] -= use_time_item[2];
+          if(parallel_num == 1){
+            for(int k = use_time_item[3]; k < use_time_item[4]; ++k) {
+              freeAt[server][npu][k] -= use_time_item[2];
+              if(SEARCH_BS_PLAN) parallel_cnt[server][npu][k]++;
+            }
           }
           current_cnt -= schedule_item[3];
           time = schedule_item[0] + lat;
@@ -656,9 +882,12 @@ Schedule solve2(int parallel_num, int reverse_mode, int order_mode, int move_mod
         if(success)
           break;
       }
-      for(auto& p : bestUseTime) {
-        for(int k = p[3]; k < p[4]; ++k) {
-          freeAt[p[0]][p[1]][k] += p[2];
+      if(parallel_num == 1){
+        for(auto& p : bestUseTime) {
+          for(int k = p[3]; k < p[4]; ++k) {
+            freeAt[p[0]][p[1]][k] += p[2];
+            if(SEARCH_BS_PLAN) parallel_cnt[p[0]][p[1]][k]--;
+          }
         }
       }
     }
@@ -683,6 +912,7 @@ Schedule solve2(int parallel_num, int reverse_mode, int order_mode, int move_mod
     for(auto& p : bestUseTime) {
       for(int k = p[3]; k < p[4]; ++k) {
         freeAt[p[0]][p[1]][k] -= p[2];
+        if(SEARCH_BS_PLAN) parallel_cnt[p[0]][p[1]][k]++;
       }
     }
   }
@@ -905,7 +1135,7 @@ Schedule solve() {
   } else {
     finalSol = sol1;
     if(log_method)
-      cerr << "method1: (" << (int)sol1.score << ")" << endl;
+      cerr << "method1: (" << (int)sol1.score << "), ";
   }
   return finalSol;
 }
@@ -1030,14 +1260,17 @@ int main() {
   }
   
   // Print top N method2 parameters
-  if(log_method) {
-    cerr << "Top" << TOP_N_METHOD2 << " method2: ";
-    for(int i = 0; i < topN_method2.size(); ++i) {
-      if(i > 0) cerr << " | ";
-      const auto& hp = topN_method2[i].second;
-      cerr << "(" << hp[0] << "," << hp[1] << "," << hp[2] << "," << hp[3] << ":" << (int)topN_method2[i].first << ")";
+  if(log_method || log_cache_cnt) {
+    if(log_method) {
+      cerr << "Top" << TOP_N_METHOD2 << " method2: ";
+      for(int i = 0; i < topN_method2.size(); ++i) {
+        if(i > 0) cerr << " | ";
+        const auto& hp = topN_method2[i].second;
+        cerr << "(" << hp[0] << "," << hp[1] << "," << hp[2] << "," << hp[3] << ":" << (int)topN_method2[i].first << ")";
+      }
+      cerr << " total: " << seen.size();
     }
-    cerr << " total: " << seen.size();
+    if(log_cache_cnt) cerr << " cache_cnt: " << cache_cnt;
     cerr << endl;
   }
   
