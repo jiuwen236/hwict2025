@@ -11,7 +11,7 @@ const bool RANDOM_SEARCH = 1;  // 关闭时，仅进行爬山法优化
 static const vector<vector<int>> HPARAM_VALUES = {
   {2,3,4,1}, // parallel_num/max_parallel  1好像没必要
   {1,2}, // reverse_mode 1: 进行削峰，2: 按概率决定是否反向
-  {1,2,4,5,0}, // order_mode  不迁移时如何选择npu：0: 选择最快的，1: 选择第1个合法解，2: 选择最后一个，3: 随机顺序，4: 每次随机，5: 处理能力
+  {5,1,2,4,0}, // order_mode  不迁移时如何选择npu：0: 选择最快的，1: 选择第1个合法解，2: 选择最后一个，3: 随机顺序，4: 每次随机，5: 处理能力
   {1}    // move_mode  是否迁移
 };
 
