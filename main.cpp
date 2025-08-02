@@ -6,10 +6,10 @@ using namespace std;
 
 // Hyperparameter search configuration
 const bool HP_SEARCH = 1;
-const double HP_TIME_LIMIT = 10; // 单位：秒
+const double HP_TIME_LIMIT = 23; // 单位：秒
 const bool RANDOM_SEARCH = 1;  // 关闭时，仅进行爬山法优化
 static const vector<vector<int>> HPARAM_VALUES = {
-  {2,3,4,1}, // parallel_num/max_parallel  1好像没必要
+  {2,3,4}, // parallel_num/max_parallel  1好像没必要
   {1,2}, // reverse_mode 1: 进行削峰，2: 按概率决定是否反向
   {5,1,2,4,0}, // order_mode  不迁移时如何选择npu：0: 选择最快的，1: 选择第1个合法解，2: 选择最后一个，3: 随机顺序，4: 每次随机，5: 处理能力
   {1}    // move_mode  是否迁移
@@ -22,7 +22,7 @@ const bool SEARCH_BS_PLAN = 1; // 按照以前的方式规划batch
 const bool fusai = 1;
 
 
-bool log_method = 1;  // 是否打印不同方法分数信息
+bool log_method = 0;  // 是否打印不同方法分数信息
 const int TOP_N_METHOD2 = 3;  // 打印前N名method2参数设置
 const bool log_cache_cnt = 0 && SEARCH_BS_PLAN;
 
@@ -131,6 +131,7 @@ int npu_num;
 // 方法2变量
 int max_mem_size, avg_mem_size;
 vector<double> avg_cnt(MAX_END_TIME + 1);
+double avg_cnt_avg, variance;
 
 // 分数计算函数
 double h_func(double x) {
@@ -138,6 +139,9 @@ double h_func(double x) {
 }
 double p_func(double x) {
   return pow(2, -x / 200);
+}
+double q_func(double x) {
+  return pow(2, -x / 5000);
 }
 
 int get_process_time(int bs, int sp) {
@@ -289,7 +293,7 @@ Schedule solve1(bool POSTPONE, bool IMMEDIATE, bool BEST_BS) {
       res.schedule[u_id].push_back({tm, bestSrv + 1, bestNpu + 1, batch});
       rem -= batch;
     }
-    res.score += h_func(double(bestFinish - u.e) / (u.e - u.s));
+    res.score += h_func(double(bestFinish - u.e) / (u.e - u.s)) * q_func(u.id + 1);
     if (bestFinish > u.e) {
       timeout_cnt++;
       // if (u_id < 10) cerr << "timeout user: " << u_id << " " << bestFinish << " " << u.e << endl;
@@ -321,6 +325,14 @@ void get_avg_cnt() {
     }
     avg_cnt[i] /= dur;
   }
+  int cnt = 0;
+  for(int i = 0; i < MAX_END_TIME; ++i) {
+    if(avg_cnt[i] > 0) {
+      avg_cnt_avg += avg_cnt[i];
+      cnt++;
+    }
+  }
+  avg_cnt_avg /= cnt;
 }
 
 struct BS_Plan {
@@ -499,20 +511,36 @@ pii get_bs(int memory, int a, int b, int sp) {
 // 方法2，允许 npu 并行处理多个用户请求
 Schedule solve2(int parallel_num, int reverse_mode, int order_mode, int move_mode) {
   const bool smaller_bs = 1; // 后续显存不足时，允许尝试更小的bs
+  int parallel_num_ori = parallel_num;
   deque<int> q_user = q_user_ori;
   vi new_weight(M);
   for(int i = 0; i < M; ++i) {
-    new_weight[i] = users[i].cnt * user_a[i] + ceil((double)users[i].cnt / max((avg_mem_size / parallel_num - user_b[i]) / user_a[i], 1)) * user_b[i];
+    new_weight[i] = users[i].cnt * user_a[i] + ceil((double)users[i].cnt / 40) * user_b[i];
+    // new_weight[i] = users[i].cnt * user_a[i] + ceil((double)users[i].cnt / max((avg_mem_size / parallel_num - user_b[i]) / user_a[i], 1)) * user_b[i];
+    // new_weight[i] /= q_func(i + 1);
+    new_weight[i] /= pow(q_func(i + 1), 0.5);
   }
   sort(q_user.begin(), q_user.end(), [&](int x, int y) {
     if (new_weight[x] != new_weight[y])
       return new_weight[x] < new_weight[y];
-    return users[x].s < users[y].s;
+    if (users[x].id != users[y].id)
+      return users[x].id < users[y].id;
+    return users[x].e < users[y].e;
   });
   Schedule res(M);
   int timeout_cnt = 0;
   uniform_real_distribution<float> dist(0.0, 1.0);
   vector<int> debug_finish(M);
+
+  vi server_parallel(N);
+  int para_r = dist(rng);
+  for(int i = 0; i < N; ++i) {
+    server_parallel[i] = parallel_num;
+    // if(memSize[i] - avg_mem_size > 250 && para_r < 0.5) {
+    //   server_parallel[i] = parallel_num + 1;
+    // }
+  }
+
 
   // 占用情况初始化
   vector<vector<vector<uint16_t>>> freeAt(N);
@@ -522,9 +550,9 @@ Schedule solve2(int parallel_num, int reverse_mode, int order_mode, int move_mod
     if(SEARCH_BS_PLAN)
       parallel_cnt[i].resize(cores[i]);
     for(size_t j = 0; j < cores[i]; ++j) {
-      freeAt[i][j].resize(1000 * 1000 * 27 / npu_num, memSize[i]);
+      freeAt[i][j].resize(1000 * 1000 * 10 / npu_num, memSize[i]);
       if(SEARCH_BS_PLAN)
-        parallel_cnt[i][j].resize(1000 * 1000 * 27 / npu_num, 0);
+        parallel_cnt[i][j].resize(1000 * 1000 * 10 / npu_num, 0);
     }
   }
 
@@ -563,6 +591,8 @@ Schedule solve2(int parallel_num, int reverse_mode, int order_mode, int move_mod
       postponed.pop_front();
     }
     auto &u = users[u_id];
+    // if(avg_cnt[u.s] < avg_cnt_avg * 0.2) parallel_num = 1;
+    // else parallel_num = parallel_num_ori;
     bool is_reverse = false;
     // 通过反向遍历削峰
     if(reverse_mode && !is_late_user) {
@@ -620,13 +650,13 @@ Schedule solve2(int parallel_num, int reverse_mode, int order_mode, int move_mod
           valid = true;
           int mem_size = -1;
           if(loop_cnt == 2) 
-            mem_size = min(memSize[i] / parallel_num + memSize[i] / 10, (int)freeAt[i][j][t]);  // 可调参
+            mem_size = min(memSize[i] / server_parallel[i] + memSize[i] / 10, (int)freeAt[i][j][t]);  // 可调参
           else if(loop_cnt == 1) 
-            mem_size = min(int(memSize[i] / parallel_num * 1.3 + memSize[i] * 0.15), (int)freeAt[i][j][t]);
+            mem_size = min(int(memSize[i] / server_parallel[i] * 1.3 + memSize[i] * 0.15), (int)freeAt[i][j][t]);
           else
             mem_size = (int)freeAt[i][j][t];
           if(SEARCH_BS_PLAN){
-            int parallel = max(parallel_num - parallel_cnt[i][j][t], 1);
+            int parallel = max(server_parallel[i] - parallel_cnt[i][j][t], 1);
             int min_bs = (u.cnt - 1) / MAX_T_NUM + 1;
             if(double(u.cnt - current_cnt + min_bs) / (schedule.size() + 1) * (MAX_T_NUM - 1) < u.cnt) min_bs++;
             BS_Plan plan = get_bs_plan_cache(speedCoef[i], mem_size, user_a[u.id], user_b[u.id], parallel, min_bs);
@@ -718,7 +748,7 @@ Schedule solve2(int parallel_num, int reverse_mode, int order_mode, int move_mod
           schedule.push_front({t - proc_time + 1 - lat, i + 1, j + 1, bs});
           use_time.push_back({i, j, space, t - proc_time + 1, t + 1});
         }
-        if(parallel_num == 1 && speedCoef[i] == 1){
+        if(server_parallel[i] == 1 && speedCoef[i] == 1){
           for(int k = use_time.back()[3]; k < use_time.back()[4]; ++k) {
             freeAt[i][j][k] -= space;
             if(SEARCH_BS_PLAN) parallel_cnt[i][j][k]++;
@@ -739,7 +769,7 @@ Schedule solve2(int parallel_num, int reverse_mode, int order_mode, int move_mod
         int plus_time = (lat + proc_time) / proc_time * proc_time - 1;  // 保持整数倍，对多数数据有效
         t = is_reverse ? t - proc_time + 1 - plus_time : t + plus_time;
       }
-      if(parallel_num == 1 && speedCoef[i] == 1){
+      if(server_parallel[i] == 1 && speedCoef[i] == 1){
         for(auto& p : use_time) {
           for(int k = p[3]; k < p[4]; ++k) {
               freeAt[p[0]][p[1]][k] += p[2];
@@ -760,7 +790,7 @@ Schedule solve2(int parallel_num, int reverse_mode, int order_mode, int move_mod
 
     // 允许迁移的并行，解决超时的用户，采用迁移冷却期来使迁移次数尽量小
     if(!success && move_mode == 1) {
-      vector<double> cooling_list = {2,1};
+      vector<double> cooling_list = {1};
       for(double cooling : cooling_list) {
         bestActualFinish = u.s;
         bestMoveCnt = 0;
@@ -798,7 +828,7 @@ Schedule solve2(int parallel_num, int reverse_mode, int order_mode, int move_mod
                 int mem_size = (int)freeAt[i][j][t];  // 尽可能大
                 int bs = 0, proc_time = 0;
                 if(SEARCH_BS_PLAN){
-                  int parallel = max(parallel_num - parallel_cnt[i][j][t], 1);
+                  int parallel = max(server_parallel[i] - parallel_cnt[i][j][t], 1);
                   int min_bs = (u.cnt - 1) / MAX_T_NUM + 1;
                   if(double(u.cnt - current_cnt + min_bs) / (bestSchedule.size() + 1) * (MAX_T_NUM - 1) < u.cnt) min_bs++;
                   BS_Plan plan = get_bs_plan_cache(speedCoef[i], mem_size, user_a[u.id], user_b[u.id], parallel, min_bs);
@@ -907,7 +937,7 @@ Schedule solve2(int parallel_num, int reverse_mode, int order_mode, int move_mod
       continue;
     }
 
-    res.score += h_func(double(bestActualFinish - u.e) / (u.e - u.s)) * p_func(bestMoveCnt);
+    res.score += h_func(double(bestActualFinish - u.e) / (u.e - u.s)) * p_func(bestMoveCnt) * q_func(u.id + 1);
     if (bestActualFinish > u.e) {
       timeout_cnt++;
     }
@@ -994,7 +1024,7 @@ void update_topN_method2(double score, const HPVec& hp) {
 }
 
 // 程序经过的时间
-int get_duration(std::chrono::steady_clock::time_point t0) {
+double get_duration(std::chrono::steady_clock::time_point t0) {
   return std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
 }
 
@@ -1011,22 +1041,31 @@ Schedule solve() {
       init_hp.push_back({m.max_parallel, m.reverse_mode, m.order_mode, m.move_mode});
   }
   std::chrono::steady_clock::time_point t0 = std::chrono::steady_clock::now();
+  int solve2_count = 0;
+  double solve2_total_time = 0.0;
   double bestScore2 = -1;
   HPVec bestHP2;
   Schedule bestSol2;
   for(auto &hp : init_hp) {
-    if(get_duration(t0) >= TIME_LIMIT) break;
+    // Estimate time and break if next solve2 likely exceeds limit
+    double elapsed = get_duration(t0);
+    if (elapsed >= TIME_LIMIT) break;
+    if (solve2_count > 0 && elapsed + (solve2_total_time / solve2_count) >= TIME_LIMIT) break;
+    auto s0 = steady_clock::now();
     Schedule sol = solve2(hp[0], hp[1], hp[2], hp[3]);
+    double dur = duration<double>(steady_clock::now() - s0).count();
+    solve2_total_time += dur;
+    solve2_count++;
     double s = sol.score;
     score2params[s].push_back(hp);
     seen.insert(hp);
     update_topN_method2(s, hp);
     if(s > bestScore2) { bestScore2 = s; bestHP2 = hp; bestSol2 = sol; }
   }
-  while(HP_SEARCH && get_duration(t0) < TIME_LIMIT && (int)seen.size() < totalCombos) {
+  while(HP_SEARCH && get_duration(t0) + (solve2_count > 0 ? solve2_total_time / solve2_count : 0) < TIME_LIMIT && (int)seen.size() < totalCombos) {
     // 局部爬山优化
     bool improved = true;
-    while(improved && get_duration(t0) < TIME_LIMIT) {
+    while(improved && get_duration(t0) + (solve2_count > 0 ? solve2_total_time / solve2_count : 0) < TIME_LIMIT) {
       improved = false;
       for(int pi = 0; pi < (int)HPARAM_VALUES.size(); ++pi) {
         for(int val : HPARAM_VALUES[pi]) {
@@ -1034,8 +1073,16 @@ Schedule solve() {
           auto cand = bestHP2;
           cand[pi] = val;
           if(seen.count(cand)) continue;
-          if(get_duration(t0) >= TIME_LIMIT) break;
+          if(get_duration(t0) + (solve2_count > 0 ? solve2_total_time / solve2_count : 0) >= TIME_LIMIT) break;
+          // timing and prediction for local search
+          double elapsed = get_duration(t0);
+          if (elapsed >= TIME_LIMIT) break;
+          if (solve2_count > 0 && elapsed + (solve2_total_time / solve2_count) >= TIME_LIMIT) break;
+          auto s0 = steady_clock::now();
           Schedule sol = solve2(cand[0], cand[1], cand[2], cand[3]);
+          double dur = duration<double>(steady_clock::now() - s0).count();
+          solve2_total_time += dur;
+          solve2_count++;
           double s = sol.score;
           score2params[s].push_back(cand);
           seen.insert(cand);
@@ -1048,14 +1095,14 @@ Schedule solve() {
             break;
           }
         }
-        if(improved || get_duration(t0) >= TIME_LIMIT) break;
+        if(improved || get_duration(t0) + (solve2_total_time / solve2_count) >= TIME_LIMIT) break;
       }
     }
     if(!RANDOM_SEARCH)
       break;
     // 轮盘赌 + 交叉 + 变异
     uniform_real_distribution<double> prob01(0.0,1.0);
-    while(get_duration(t0) < TIME_LIMIT && (int)seen.size() < totalCombos) {
+    while(get_duration(t0) + (solve2_count > 0 ? solve2_total_time / solve2_count : 0) < TIME_LIMIT && (int)seen.size() < totalCombos) {
       // 构建轮盘赌分布
       vector<pair<double,HPVec>> pool; pool.reserve(score2params.size());
       double sumScore = 0.0;
@@ -1086,7 +1133,7 @@ Schedule solve() {
       HPVec parent1 = roulette_pick({});
       HPVec parent2 = roulette_pick(parent1);
       for(int childIdx=0; childIdx<4; ++childIdx) {
-        if(get_duration(t0) >= TIME_LIMIT) break;
+        if(get_duration(t0) + (solve2_count > 0 ? solve2_total_time / solve2_count : 0) >= TIME_LIMIT) break;
         HPVec child = parent1;
         for(int k=0; k<(int)HPARAM_VALUES.size(); ++k) {
           if(rng() & 1) child[k] = parent2[k];
@@ -1104,7 +1151,15 @@ Schedule solve() {
           }
         }
         if(seen.count(child)) continue;
+        // timing and prediction for random search
+        double elapsed = get_duration(t0);
+        if (elapsed >= TIME_LIMIT) break;
+        if (solve2_count > 0 && elapsed + (solve2_total_time / solve2_count) >= TIME_LIMIT) break;
+        auto s0 = steady_clock::now();
         Schedule sol = solve2(child[0], child[1], child[2], child[3]);
+        double dur = duration<double>(steady_clock::now() - s0).count();
+        solve2_total_time += dur;
+        solve2_count++;
         double s = sol.score;
         score2params[s].push_back(child);
         seen.insert(child);
@@ -1121,6 +1176,21 @@ Schedule solve() {
       if(improved) {
         // 重新进入爬山搜索
         break;  // 跳出遗传循环，返回外层重新执行爬山优化
+      }
+    }
+  }
+  // 如果所有超参组合已搜索完且还在时间限制内，重复运行最优超参组合
+  if(HP_SEARCH && (int)seen.size() >= totalCombos) {
+    while(get_duration(t0) + (solve2_total_time / solve2_count) < TIME_LIMIT) {
+      auto s0 = steady_clock::now();
+      Schedule sol = solve2(bestHP2[0], bestHP2[1], bestHP2[2], bestHP2[3]);
+      double dur = duration<double>(steady_clock::now() - s0).count();
+      solve2_total_time += dur;
+      solve2_count++;
+      double s = sol.score;
+      if(s > bestScore2) {
+        bestScore2 = s;
+        bestSol2 = sol;
       }
     }
   }
@@ -1164,6 +1234,11 @@ int main() {
     npu_num += cores[i];
   }
   avg_mem_size /= npu_num;
+  for (int i = 0; i < N; i++) {
+    variance += cores[i] * pow(memSize[i] - avg_mem_size, 2);
+  }
+  variance /= npu_num;
+  variance = sqrt(variance);
 
   cin >> M;
   users.resize(M);
@@ -1218,8 +1293,10 @@ int main() {
     // users[i].weight = users[i].cnt;
     // users[i].weight = double(users[i].cnt) / users[i].duration;
     // users[i].weight = double(users[i].cnt) * user_a[i] * user_b[i];
-    // users[i].weight = double(users[i].cnt) * user_a[i] + ceil((double)users[i].cnt / 20) * user_b[i];
-    users[i].weight = double(users[i].cnt) * user_a[i] + ceil((double)users[i].cnt / max((avg_mem_size - user_b[i]) / user_a[i], 1)) * user_b[i];
+    users[i].weight = double(users[i].cnt) * user_a[i] + ceil((double)users[i].cnt / 20) * user_b[i];
+    // users[i].weight = double(users[i].cnt) * user_a[i] + ceil((double)users[i].cnt / max((avg_mem_size - user_b[i]) / user_a[i], 1)) * user_b[i];
+    // users[i].weight /= q_func(i + 1);
+    users[i].weight /= pow(q_func(i + 1), 0.5);
   }
 
   for (int i = 0; i < M; ++i) q_user_ori.push_back(i);
@@ -1227,7 +1304,9 @@ int main() {
   sort(q_user_ori.begin(), q_user_ori.end(), [&](int x, int y) {
     if (users[x].weight != users[y].weight)
       return users[x].weight < users[y].weight;
-    return users[x].s < users[y].s;
+    if (users[x].id != users[y].id)
+      return users[x].id < users[y].id;
+    return users[x].e < users[y].e;
   });
   
   for (int i = 0; i < N; i++) {

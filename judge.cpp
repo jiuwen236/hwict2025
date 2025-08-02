@@ -54,6 +54,7 @@ struct ScoreDetails {
     std::vector<double> p_mi_values;  // 每个用户的p(mi)
     std::vector<int> user_end_times;  // 每个用户的结束时间
     std::vector<int> move_counts;     // 每个用户的迁移次数
+    std::vector<double> q_i_values;    // 每个用户的q(i)
 };
 
 // 编译C++文件
@@ -508,6 +509,7 @@ ScoreDetails compute_score(const std::string& in_file, const std::string& stdout
     // 计算分数
     auto h = [](double x) { return std::pow(2.0, -x / 100.0); };
     auto p = [](double x) { return std::pow(2.0, -x / 200.0); };
+    auto q = [](double x) { return std::pow(2.0, -x / 5000.0); };
 
     ScoreDetails details;
     details.K = 0;
@@ -524,7 +526,8 @@ ScoreDetails compute_score(const std::string& in_file, const std::string& stdout
     details.move_counts.resize(M);
     details.h_xi_values.resize(M);
     details.p_mi_values.resize(M);
-
+    details.q_i_values.resize(M);
+    
     double total = 0.0;
     double sum_h_xi = 0.0;
     double sum_p_mi = 0.0;
@@ -539,10 +542,11 @@ ScoreDetails compute_score(const std::string& in_file, const std::string& stdout
         details.move_counts[i] = mi;
         details.h_xi_values[i] = h(xi);
         details.p_mi_values[i] = p(mi);
+        details.q_i_values[i] = q(i + 1);
         
         sum_h_xi += details.h_xi_values[i];
         sum_p_mi += details.p_mi_values[i];
-        total += details.h_xi_values[i] * details.p_mi_values[i];
+        total += details.h_xi_values[i] * details.p_mi_values[i] * details.q_i_values[i];
     }
 
     details.avg_h_xi = M > 0 ? sum_h_xi / M : 0.0;
