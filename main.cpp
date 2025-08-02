@@ -129,7 +129,7 @@ int npu_num;
 // 方法1变量
 
 // 方法2变量
-int max_mem_size;
+int max_mem_size, avg_mem_size;
 vector<double> avg_cnt(MAX_END_TIME + 1);
 
 // 分数计算函数
@@ -500,6 +500,15 @@ pii get_bs(int memory, int a, int b, int sp) {
 Schedule solve2(int parallel_num, int reverse_mode, int order_mode, int move_mode) {
   const bool smaller_bs = 1; // 后续显存不足时，允许尝试更小的bs
   deque<int> q_user = q_user_ori;
+  vi new_weight(M);
+  for(int i = 0; i < M; ++i) {
+    new_weight[i] = users[i].cnt * user_a[i] + ceil((double)users[i].cnt / max((avg_mem_size / parallel_num - user_b[i]) / user_a[i], 1)) * user_b[i];
+  }
+  sort(q_user.begin(), q_user.end(), [&](int x, int y) {
+    if (new_weight[x] != new_weight[y])
+      return new_weight[x] < new_weight[y];
+    return users[x].s < users[y].s;
+  });
   Schedule res(M);
   int timeout_cnt = 0;
   uniform_real_distribution<float> dist(0.0, 1.0);
@@ -1151,7 +1160,10 @@ int main() {
   for (int i = 0; i < N; i++) {
     cin >> cores[i] >> speedCoef[i] >> memSize[i];
     max_mem_size = max(max_mem_size, memSize[i]);
+    avg_mem_size += memSize[i] * cores[i];
+    npu_num += cores[i];
   }
+  avg_mem_size /= npu_num;
 
   cin >> M;
   users.resize(M);
@@ -1194,10 +1206,10 @@ int main() {
       A += user_a[i];
       B += user_b[i];
     }
-    // A = round(((double)A / M + 20) / 2);
-    // B = round(((double)B / M + 200) / 2);
-    A = 20;
-    B = 200;
+    A = round((double)A / M);
+    B = round((double)B / M);
+    // A = 20;
+    // B = 200;
   }
 
   for (int i = 0; i < M; i++) {
@@ -1205,7 +1217,9 @@ int main() {
     // users[i].weight = users[i].s;
     // users[i].weight = users[i].cnt;
     // users[i].weight = double(users[i].cnt) / users[i].duration;
-    users[i].weight = double(users[i].cnt) * user_a[i] * user_b[i];
+    // users[i].weight = double(users[i].cnt) * user_a[i] * user_b[i];
+    // users[i].weight = double(users[i].cnt) * user_a[i] + ceil((double)users[i].cnt / 20) * user_b[i];
+    users[i].weight = double(users[i].cnt) * user_a[i] + ceil((double)users[i].cnt / max((avg_mem_size - user_b[i]) / user_a[i], 1)) * user_b[i];
   }
 
   for (int i = 0; i < M; ++i) q_user_ori.push_back(i);
@@ -1217,7 +1231,6 @@ int main() {
   });
   
   for (int i = 0; i < N; i++) {
-    npu_num += cores[i];
     computing_power += cores[i] * speedCoef[i];
   }
 
