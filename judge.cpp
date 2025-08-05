@@ -35,6 +35,7 @@
 // 自己实现的判题器
 
 const bool fusai = 1;
+const bool juesai = 1;
 std::string compile_cmd = "g++ -O3 -march=native -std=c++17 ";
 
 namespace fs = std::filesystem;
@@ -546,7 +547,11 @@ ScoreDetails compute_score(const std::string& in_file, const std::string& stdout
         
         sum_h_xi += details.h_xi_values[i];
         sum_p_mi += details.p_mi_values[i];
-        total += details.h_xi_values[i] * details.p_mi_values[i] * details.q_i_values[i];
+        if (!juesai) {
+            total += details.h_xi_values[i] * details.p_mi_values[i];
+        } else {
+            total += details.h_xi_values[i] * details.p_mi_values[i] * details.q_i_values[i];
+        }
     }
 
     details.avg_h_xi = M > 0 ? sum_h_xi / M : 0.0;

@@ -6,8 +6,9 @@ from collections import defaultdict
 import matplotlib
 
 # python data_analysis/data_analysis.py
+# 仅支持初赛数据
 
-data_file_path = 'data/n3_g1_k1.2_rate6_a20_b200.in'
+data_file_path = 'data_analysis/data0530.in'
 
 # Set matplotlib parameters for better display
 plt.rcParams['figure.figsize'] = (12, 8)

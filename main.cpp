@@ -19,10 +19,11 @@ const bool use_method1 = 1; // 是否使用方法1
 const bool USE_LAST_SEND = 0; // 最后发送的 or 最晚完成的。目前还不能改
 const bool SEARCH_BS_PLAN = 1; // 按照以前的方式规划batch
 
-const bool fusai = 1;
+const bool fusai = 1;  // 适配复赛输入
+const bool juesai = 1;  // 决赛(额外的分数计算项)
 
 
-bool log_method = 0;  // 是否打印不同方法分数信息
+bool log_method = 1;  // 是否打印不同方法分数信息
 const int TOP_N_METHOD2 = 3;  // 打印前N名method2参数设置
 const bool log_cache_cnt = 0 && SEARCH_BS_PLAN;
 
@@ -75,10 +76,8 @@ vector<Method> methods = {
   // Method::method2(1, 1, 1, 1), // debug
 };
 
-// 非并行
-// 1545451
-// 非并行 + 并行 (10秒)
-// 1363073 (方法2分数不准)
+// 决赛本地(23s)
+// 2206657
 
 // 是否加入随机性
 // mt19937 rng(chrono::steady_clock::now().time_since_epoch().count());
@@ -293,7 +292,11 @@ Schedule solve1(bool POSTPONE, bool IMMEDIATE, bool BEST_BS) {
       res.schedule[u_id].push_back({tm, bestSrv + 1, bestNpu + 1, batch});
       rem -= batch;
     }
-    res.score += h_func(double(bestFinish - u.e) / (u.e - u.s)) * q_func(u.id + 1);
+    if (!juesai) {
+      res.score += h_func(double(bestFinish - u.e) / (u.e - u.s));
+    } else {
+      res.score += h_func(double(bestFinish - u.e) / (u.e - u.s)) * q_func(u.id + 1);
+    }
     if (bestFinish > u.e) {
       timeout_cnt++;
       // if (u_id < 10) cerr << "timeout user: " << u_id << " " << bestFinish << " " << u.e << endl;
@@ -517,8 +520,9 @@ Schedule solve2(int parallel_num, int reverse_mode, int order_mode, int move_mod
   for(int i = 0; i < M; ++i) {
     new_weight[i] = users[i].cnt * user_a[i] + ceil((double)users[i].cnt / 40) * user_b[i];
     // new_weight[i] = users[i].cnt * user_a[i] + ceil((double)users[i].cnt / max((avg_mem_size / parallel_num - user_b[i]) / user_a[i], 1)) * user_b[i];
-    // new_weight[i] /= q_func(i + 1);
-    new_weight[i] /= pow(q_func(i + 1), 0.5);
+    if (juesai) {
+      new_weight[i] /= pow(q_func(i + 1), 0.5);
+    }
   }
   sort(q_user.begin(), q_user.end(), [&](int x, int y) {
     if (new_weight[x] != new_weight[y])
@@ -937,7 +941,11 @@ Schedule solve2(int parallel_num, int reverse_mode, int order_mode, int move_mod
       continue;
     }
 
-    res.score += h_func(double(bestActualFinish - u.e) / (u.e - u.s)) * p_func(bestMoveCnt) * q_func(u.id + 1);
+    if (!juesai) {
+      res.score += h_func(double(bestActualFinish - u.e) / (u.e - u.s)) * p_func(bestMoveCnt);
+    } else {
+      res.score += h_func(double(bestActualFinish - u.e) / (u.e - u.s)) * p_func(bestMoveCnt) * q_func(u.id + 1);
+    }
     if (bestActualFinish > u.e) {
       timeout_cnt++;
     }
@@ -1295,8 +1303,9 @@ int main() {
     // users[i].weight = double(users[i].cnt) * user_a[i] * user_b[i];
     users[i].weight = double(users[i].cnt) * user_a[i] + ceil((double)users[i].cnt / 20) * user_b[i];
     // users[i].weight = double(users[i].cnt) * user_a[i] + ceil((double)users[i].cnt / max((avg_mem_size - user_b[i]) / user_a[i], 1)) * user_b[i];
-    // users[i].weight /= q_func(i + 1);
-    users[i].weight /= pow(q_func(i + 1), 0.5);
+    if (juesai) {
+      users[i].weight /= pow(q_func(i + 1), 0.5);
+    }
   }
 
   for (int i = 0; i < M; ++i) q_user_ori.push_back(i);
